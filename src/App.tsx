@@ -1,11 +1,20 @@
 import { useEffect, useMemo, useState, type PointerEvent as ReactPointerEvent } from "react";
 import {
+  appendVersion,
   buildExportPreview,
+  buildProjectScript,
   createBlock,
   createDefaultPayload,
+  createVersionSnapshot,
+  duplicateBlock,
+  duplicatePayload,
   getBlockLabel,
   getBlockTypeLabel,
-  reorderBlocks
+  getNextShotNumber,
+  parseImportedAssets,
+  reorderBlocks,
+  restoreFromVersion,
+  sortAssetsForDisplay
 } from "./lib/payload";
 import {
   createFolder,
@@ -128,9 +137,16 @@ export default function App() {
   const [statusMessage, setStatusMessage] = useState("正在加载工作台...");
   const [copyFeedback, setCopyFeedback] = useState("");
   const [searchQuery, setSearchQuery] = useState("");
+  const [sortMode, setSortMode] = useState<"updated_desc" | "title_asc" | "favorites_first" | "shot_number">("updated_desc");
   const [favoritesOnly, setFavoritesOnly] = useState(false);
   const [isAutoSaving, setIsAutoSaving] = useState(false);
   const [isManualSaving, setIsManualSaving] = useState(false);
+  const [confirmAssetDelete, setConfirmAssetDelete] = useState(false);
+  const [versionName, setVersionName] = useState("");
+  const [copyTargetFolderId, setCopyTargetFolderId] = useState<string | null>(null);
+  const [importPanelOpen, setImportPanelOpen] = useState(false);
+  const [importRaw, setImportRaw] = useState("");
+  const [importTitle, setImportTitle] = useState("");
   const [editingFolderId, setEditingFolderId] = useState<string | null>(null);
   const [editingFolderName, setEditingFolderName] = useState("");
   const [isEditingAssetTitle, setIsEditingAssetTitle] = useState(false);
@@ -156,15 +172,26 @@ export default function App() {
     [assets, selectedFolderId]
   );
   const visibleAssets = useMemo(
-    () =>
-      folderAssets.filter(
+    () => {
+      const filtered = folderAssets.filter(
         (asset) => (!favoritesOnly || asset.is_favorite) && matchesAssetQuery(asset, searchQuery)
-      ),
-    [favoritesOnly, folderAssets, searchQuery]
+      );
+
+      return sortAssetsForDisplay(filtered, selectedFolder?.type ?? "library", sortMode);
+    },
+    [favoritesOnly, folderAssets, searchQuery, selectedFolder?.type, sortMode]
   );
   const favoriteCount = useMemo(
     () => folderAssets.filter((asset) => asset.is_favorite).length,
     [folderAssets]
+  );
+  const projectDuration = useMemo(
+    () =>
+      folderAssets.reduce(
+        (total, asset) => total + (selectedFolder?.type === "project" ? asset.payload.storyboard?.duration_seconds ?? 0 : 0),
+        0
+      ),
+    [folderAssets, selectedFolder?.type]
   );
   const activeAsset = assets.find((asset) => asset.id === activeAssetId) ?? null;
   const exportPreview = assetDraft ? buildExportPreview(assetDraft.payload) : "";
@@ -178,11 +205,22 @@ export default function App() {
     if (activeAsset) {
       setAssetDraft(cloneAsset(activeAsset));
       setIsEditingAssetTitle(false);
+      setConfirmAssetDelete(false);
     } else {
       setAssetDraft(null);
       setIsEditingAssetTitle(false);
+      setConfirmAssetDelete(false);
     }
   }, [activeAsset]);
+
+  useEffect(() => {
+    setCopyTargetFolderId(selectedFolderId);
+    if (selectedFolder?.type === "project") {
+      setSortMode("shot_number");
+    } else if (sortMode === "shot_number") {
+      setSortMode("updated_desc");
+    }
+  }, [selectedFolder?.type, selectedFolderId]);
 
   useEffect(() => {
     if (!assetDraft || !activeAsset || !draftIsDirty) {
@@ -231,6 +269,43 @@ export default function App() {
     return () => window.removeEventListener("beforeunload", handleBeforeUnload);
   }, [draftIsDirty]);
 
+  useEffect(() => {
+    if (!drawerOpen) {
+      return;
+    }
+
+    const handleEscape = (event: KeyboardEvent) => {
+      if (event.key !== "Escape" || event.defaultPrevented) {
+        return;
+      }
+
+      if (importPanelOpen) {
+        setImportPanelOpen(false);
+        return;
+      }
+
+      if (folderContextMenu) {
+        closeFolderContextMenu();
+        return;
+      }
+
+      if (assetContextMenu) {
+        closeAssetContextMenu();
+        return;
+      }
+
+      if (isEditingAssetTitle) {
+        setIsEditingAssetTitle(false);
+        return;
+      }
+
+      closeDrawer();
+    };
+
+    window.addEventListener("keydown", handleEscape);
+    return () => window.removeEventListener("keydown", handleEscape);
+  }, [assetContextMenu, drawerOpen, folderContextMenu, importPanelOpen, isEditingAssetTitle]);
+
   function applySnapshot(nextSnapshot: WorkbenchSnapshot, message: string): WorkbenchSnapshot {
     setSnapshot(nextSnapshot);
     setStatusMessage(message);
@@ -250,6 +325,7 @@ export default function App() {
     setDraggingBlockId(null);
     setDragOverBlockId(null);
     setIsEditingAssetTitle(false);
+    setConfirmAssetDelete(false);
   }
 
   function closeFolderContextMenu(): void {
@@ -355,11 +431,17 @@ export default function App() {
       return;
     }
 
+    const nextShotNumber =
+      selectedFolder.type === "project" ? getNextShotNumber(assets, selectedFolder.id) : 1;
+
     const nextSnapshot = applySnapshot(
       await createPromptAsset({
         folder_id: selectedFolder.id,
-        title: selectedFolder.type === "project" ? "新分镜卡片" : "新提示词资产",
-        payload: createDefaultPayload(selectedFolder.type),
+        title:
+          selectedFolder.type === "project"
+            ? `镜头 ${String(nextShotNumber).padStart(2, "0")} / 新分镜卡片`
+            : "新提示词资产",
+        payload: createDefaultPayload(selectedFolder.type, nextShotNumber),
         is_favorite: false
       }),
       "已创建资产。"
@@ -413,12 +495,19 @@ export default function App() {
   }
 
   async function handleDeleteAsset(): Promise<void> {
-    if (!assetDraft || !window.confirm(`删除资产「${assetDraft.title}」？`)) {
+    if (!assetDraft) {
+      return;
+    }
+
+    if (!confirmAssetDelete) {
+      setConfirmAssetDelete(true);
+      setStatusMessage("再次点击“确认删除”以删除当前资产。");
       return;
     }
 
     const deletedAssetId = assetDraft.id;
     applySnapshot(await deletePromptAsset(deletedAssetId), "资产已删除。");
+    setConfirmAssetDelete(false);
     closeDrawer();
   }
 
@@ -454,6 +543,192 @@ export default function App() {
     const json = await exportWorkbenchJson();
     downloadJsonFile(json, `prompt-workbench-${new Date().toISOString().slice(0, 10)}.json`);
     setStatusMessage("全量 JSON 已下载。");
+  }
+
+  async function handleDuplicateAsset(asset: PromptAsset, targetFolderId = asset.folder_id): Promise<void> {
+    const targetFolder = folders.find((folder) => folder.id === targetFolderId) ?? selectedFolder;
+    const duplicatedPayload = duplicatePayload(asset.payload);
+
+    if (targetFolder?.type === "project") {
+      duplicatedPayload.storyboard = {
+        ...(duplicatedPayload.storyboard ?? { shot_number: 1 }),
+        shot_number: getNextShotNumber(assets, targetFolderId)
+      };
+    } else {
+      duplicatedPayload.storyboard = undefined;
+    }
+
+    const nextSnapshot = applySnapshot(
+      await createPromptAsset({
+        folder_id: targetFolderId,
+        title: `${asset.title} 副本`,
+        payload: duplicatedPayload,
+        is_favorite: false
+      }),
+      targetFolderId === asset.folder_id ? "已复制资产。" : "已复制到目标目录。"
+    );
+
+    const duplicatedAsset =
+      mapPromptAssets(nextSnapshot).find(
+        (nextAsset) => nextAsset.folder_id === targetFolderId && nextAsset.title === `${asset.title} 副本`
+      ) ?? null;
+
+    if (duplicatedAsset) {
+      setSelectedFolderId(targetFolderId);
+      setActiveAssetId(duplicatedAsset.id);
+      setDrawerOpen(true);
+    }
+    closeAssetContextMenu();
+  }
+
+  async function handleDuplicateCurrentAsset(): Promise<void> {
+    if (!activeAsset) {
+      return;
+    }
+
+    await handleDuplicateAsset(activeAsset, copyTargetFolderId ?? activeAsset.folder_id);
+  }
+
+  function duplicateDraftBlock(blockId: string): void {
+    if (!assetDraft) {
+      return;
+    }
+
+    const blockIndex = assetDraft.payload.blocks.findIndex((block) => block.id === blockId);
+    if (blockIndex === -1) {
+      return;
+    }
+
+    const nextBlocks = [...assetDraft.payload.blocks];
+    nextBlocks.splice(blockIndex + 1, 0, duplicateBlock(nextBlocks[blockIndex]));
+    setAssetDraft({
+      ...assetDraft,
+      payload: {
+        ...assetDraft.payload,
+        blocks: nextBlocks
+      }
+    });
+  }
+
+  async function handleCreateVersion(): Promise<void> {
+    if (!assetDraft) {
+      return;
+    }
+
+    const version = createVersionSnapshot(assetDraft, versionName);
+    const nextDraft = {
+      ...assetDraft,
+      payload: appendVersion(assetDraft.payload, version)
+    };
+
+    setVersionName("");
+    setAssetDraft(nextDraft);
+    const nextSnapshot = applySnapshot(
+      await updatePromptAsset({
+        id: nextDraft.id,
+        folder_id: nextDraft.folder_id,
+        title: nextDraft.title.trim() || "未命名资产",
+        payload: nextDraft.payload,
+        is_favorite: nextDraft.is_favorite
+      }),
+      "已创建版本快照。"
+    );
+
+    const refreshed = mapPromptAssets(nextSnapshot).find((asset) => asset.id === nextDraft.id) ?? null;
+    setAssetDraft(refreshed ? cloneAsset(refreshed) : nextDraft);
+  }
+
+  async function handleRestoreVersion(versionId: string): Promise<void> {
+    if (!assetDraft) {
+      return;
+    }
+
+    const restored = restoreFromVersion(assetDraft.payload, versionId);
+    if (!restored) {
+      return;
+    }
+
+    const nextDraft = {
+      ...assetDraft,
+      title: restored.title,
+      payload: restored.payload
+    };
+
+    setAssetDraft(nextDraft);
+    const nextSnapshot = applySnapshot(
+      await updatePromptAsset({
+        id: nextDraft.id,
+        folder_id: nextDraft.folder_id,
+        title: nextDraft.title.trim() || "未命名资产",
+        payload: nextDraft.payload,
+        is_favorite: nextDraft.is_favorite
+      }),
+      "已恢复到所选版本。"
+    );
+
+    const refreshed = mapPromptAssets(nextSnapshot).find((asset) => asset.id === nextDraft.id) ?? null;
+    setAssetDraft(refreshed ? cloneAsset(refreshed) : nextDraft);
+  }
+
+  async function handleCopyProjectScript(): Promise<void> {
+    if (selectedFolder?.type !== "project") {
+      return;
+    }
+
+    const script = buildProjectScript(folderAssets);
+    if (!script) {
+      setStatusMessage("当前项目没有可导出的分镜脚本。");
+      return;
+    }
+
+    if (await copyText(script)) {
+      setStatusMessage("项目分镜脚本已复制。");
+    }
+  }
+
+  async function handleImportAssets(): Promise<void> {
+    if (!selectedFolder) {
+      return;
+    }
+
+    const importedAssets = parseImportedAssets(importRaw, selectedFolder.type);
+    if (importedAssets.length === 0) {
+      setStatusMessage("没有识别到可导入的内容。");
+      return;
+    }
+
+    let nextSnapshot: WorkbenchSnapshot | null = null;
+
+    for (let index = 0; index < importedAssets.length; index += 1) {
+      const item = importedAssets[index];
+      const title = importedAssets.length === 1 && importTitle.trim() ? importTitle.trim() : item.title;
+      const payload =
+        selectedFolder.type === "project"
+          ? {
+              ...item.payload,
+              storyboard: {
+                ...(item.payload.storyboard ?? {}),
+                shot_number:
+                  item.payload.storyboard?.shot_number ??
+                  getNextShotNumber(mapPromptAssets(nextSnapshot ?? snapshot!), selectedFolder.id)
+              }
+            }
+          : item.payload;
+
+      nextSnapshot = await createPromptAsset({
+        folder_id: selectedFolder.id,
+        title,
+        payload,
+        is_favorite: false
+      });
+    }
+
+    if (nextSnapshot) {
+      applySnapshot(nextSnapshot, `已导入 ${importedAssets.length} 条资产。`);
+      setImportPanelOpen(false);
+      setImportRaw("");
+      setImportTitle("");
+    }
   }
 
   function updateDraftBlock(blockId: string, patch: Partial<PromptBlock>): void {
@@ -839,11 +1114,82 @@ export default function App() {
             >
               <button
                 type="button"
+                onClick={() => void handleDuplicateAsset(assetContextMenu.asset)}
+                className="w-full rounded-xl px-3 py-2 text-left text-sm text-[#5f584f] hover:bg-[#f2ebe3]"
+              >
+                复制资产
+              </button>
+              <button
+                type="button"
                 onClick={() => void handleDeleteAssetDirect(assetContextMenu.asset)}
-                className="w-full rounded-xl px-3 py-2 text-left text-sm text-[#9b7769] hover:bg-[#efe2da]"
+                className="mt-1 w-full rounded-xl px-3 py-2 text-left text-sm text-[#9b7769] hover:bg-[#efe2da]"
               >
                 直接删除
               </button>
+            </div>
+          </>
+        ) : null}
+
+        {importPanelOpen ? (
+          <>
+            <div
+              className="fixed inset-0 z-40 bg-[#5f584f]/18 backdrop-blur-[2px]"
+              onClick={() => setImportPanelOpen(false)}
+            />
+            <div className="fixed inset-x-0 top-10 z-50 mx-auto w-[min(720px,calc(100vw-40px))] rounded-[28px] border border-[#d8cfc5] bg-[#fffaf5] p-5 shadow-[0_24px_80px_rgba(116,106,94,0.18)]">
+              <div className="flex items-start justify-between gap-4">
+                <div>
+                  <div className="text-[11px] uppercase tracking-[0.24em] text-[#9a9085]">Import Assets</div>
+                  <h3 className="mt-2 text-2xl font-semibold tracking-tight text-[#5b554e]">导入 / 迁移资产</h3>
+                  <p className="mt-2 text-sm leading-6 text-[#8b8379]">
+                    支持粘贴 JSON 快照、单条 payload JSON、Markdown 或普通纯文本。导入目标：{selectedFolder?.name ?? "--"}
+                  </p>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => setImportPanelOpen(false)}
+                  className="rounded-2xl border border-[#d8cfc5] bg-[#f8f3ed] px-3 py-2 text-sm text-[#6a645c] hover:bg-[#efe8df]"
+                >
+                  关闭
+                </button>
+              </div>
+              <div className="mt-5 grid gap-4">
+                <label className="block">
+                  <span className="mb-2 block text-[11px] uppercase tracking-[0.18em] text-[#9a9085]">Asset Title</span>
+                  <input
+                    value={importTitle}
+                    onChange={(event) => setImportTitle(event.target.value)}
+                    placeholder="单条导入时可覆盖标题；批量导入时忽略"
+                    className="w-full rounded-2xl border border-[#d8cfc5] bg-[#fcf8f4] px-4 py-3 text-sm text-[#5e5851] placeholder:text-[#b0a598]"
+                  />
+                </label>
+                <label className="block">
+                  <span className="mb-2 block text-[11px] uppercase tracking-[0.18em] text-[#9a9085]">Raw Content</span>
+                  <textarea
+                    rows={12}
+                    value={importRaw}
+                    onChange={(event) => setImportRaw(event.target.value)}
+                    placeholder="把 JSON、Markdown 或纯文本粘贴到这里"
+                    className="w-full rounded-3xl border border-[#d8cfc5] bg-[#fcf8f4] px-4 py-4 text-sm text-[#5e5851] placeholder:text-[#b0a598]"
+                  />
+                </label>
+              </div>
+              <div className="mt-5 flex justify-end gap-3">
+                <button
+                  type="button"
+                  onClick={() => setImportPanelOpen(false)}
+                  className="rounded-2xl border border-[#d8cfc5] bg-[#f8f3ed] px-4 py-3 text-sm text-[#6a645c] hover:bg-[#efe8df]"
+                >
+                  取消
+                </button>
+                <button
+                  type="button"
+                  onClick={() => void handleImportAssets()}
+                  className="rounded-2xl bg-[#a8b7ad] px-4 py-3 text-sm font-medium text-[#4e4943] hover:bg-[#97a79d]"
+                >
+                  开始导入
+                </button>
+              </div>
             </div>
           </>
         ) : null}
@@ -867,14 +1213,33 @@ export default function App() {
                         点击下方 Prompt Asset 后，会在当前列表区域直接展开编辑器，不再从右侧抽屉滑出。
                       </p>
                     </div>
-                    <button
-                      type="button"
-                      onClick={() => void handleCreateAsset()}
-                      disabled={!selectedFolder}
-                      className="rounded-2xl bg-[#a8b7ad] px-4 py-3 text-sm font-medium text-[#4e4943] hover:bg-[#97a79d] disabled:cursor-not-allowed disabled:opacity-50"
-                    >
-                      新建资产
-                    </button>
+                    <div className="flex flex-wrap justify-end gap-3">
+                      {selectedFolder?.type === "project" ? (
+                        <button
+                          type="button"
+                          onClick={() => void handleCopyProjectScript()}
+                          className="rounded-2xl border border-[#d8cfc5] bg-[#f8f3ed] px-4 py-3 text-sm text-[#6a645c] hover:bg-[#efe8df]"
+                        >
+                          复制项目脚本
+                        </button>
+                      ) : null}
+                      <button
+                        type="button"
+                        onClick={() => setImportPanelOpen(true)}
+                        disabled={!selectedFolder}
+                        className="rounded-2xl border border-[#d8cfc5] bg-[#f8f3ed] px-4 py-3 text-sm text-[#6a645c] hover:bg-[#efe8df] disabled:cursor-not-allowed disabled:opacity-50"
+                      >
+                        导入资产
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => void handleCreateAsset()}
+                        disabled={!selectedFolder}
+                        className="rounded-2xl bg-[#a8b7ad] px-4 py-3 text-sm font-medium text-[#4e4943] hover:bg-[#97a79d] disabled:cursor-not-allowed disabled:opacity-50"
+                      >
+                        新建资产
+                      </button>
+                    </div>
                   </div>
 
                   <div className="mt-5 grid gap-3 md:grid-cols-4">
@@ -904,6 +1269,11 @@ export default function App() {
                     <span className="rounded-full border border-[#d8cfc5] bg-[#f3ede6] px-3 py-1.5">
                       当前显示 {visibleAssets.length} / {folderAssets.length}
                     </span>
+                    {selectedFolder?.type === "project" ? (
+                      <span className="rounded-full border border-[#bfd0c7] bg-[#e6eeea] px-3 py-1.5 text-[#74877d]">
+                        总时长 {projectDuration} 秒
+                      </span>
+                    ) : null}
                     {searchQuery ? (
                       <span className="rounded-full border border-[#bfd0c7] bg-[#e6eeea] px-3 py-1.5 text-[#74877d]">
                         关键词: {searchQuery}
@@ -1004,6 +1374,81 @@ export default function App() {
                                     className="min-w-[260px] flex-1 rounded-2xl border border-[#d8cfc5] bg-[#fcf8f4] px-4 py-3 text-sm text-[#5e5851] placeholder:text-[#b0a598]"
                                   />
                                 </div>
+                                {selectedFolder?.type === "project" ? (
+                                  <div className="mt-3 grid gap-3 md:grid-cols-3">
+                                    <label className="block">
+                                      <span className="mb-2 block text-[11px] uppercase tracking-[0.18em] text-[#9a9085]">
+                                        镜头编号
+                                      </span>
+                                      <input
+                                        type="number"
+                                        min={1}
+                                        value={assetDraft.payload.storyboard?.shot_number ?? 1}
+                                        onChange={(event) =>
+                                          setAssetDraft({
+                                            ...assetDraft,
+                                            payload: {
+                                              ...assetDraft.payload,
+                                              storyboard: {
+                                                shot_number: Number(event.target.value || 1),
+                                                duration_seconds: assetDraft.payload.storyboard?.duration_seconds,
+                                                transition: assetDraft.payload.storyboard?.transition ?? ""
+                                              }
+                                            }
+                                          })
+                                        }
+                                        className="w-full rounded-2xl border border-[#d8cfc5] bg-[#fcf8f4] px-4 py-3 text-sm text-[#5e5851]"
+                                      />
+                                    </label>
+                                    <label className="block">
+                                      <span className="mb-2 block text-[11px] uppercase tracking-[0.18em] text-[#9a9085]">
+                                        时长（秒）
+                                      </span>
+                                      <input
+                                        type="number"
+                                        min={0}
+                                        value={assetDraft.payload.storyboard?.duration_seconds ?? ""}
+                                        onChange={(event) =>
+                                          setAssetDraft({
+                                            ...assetDraft,
+                                            payload: {
+                                              ...assetDraft.payload,
+                                              storyboard: {
+                                                shot_number: assetDraft.payload.storyboard?.shot_number ?? 1,
+                                                duration_seconds: event.target.value ? Number(event.target.value) : undefined,
+                                                transition: assetDraft.payload.storyboard?.transition ?? ""
+                                              }
+                                            }
+                                          })
+                                        }
+                                        className="w-full rounded-2xl border border-[#d8cfc5] bg-[#fcf8f4] px-4 py-3 text-sm text-[#5e5851]"
+                                      />
+                                    </label>
+                                    <label className="block">
+                                      <span className="mb-2 block text-[11px] uppercase tracking-[0.18em] text-[#9a9085]">
+                                        转场
+                                      </span>
+                                      <input
+                                        value={assetDraft.payload.storyboard?.transition ?? ""}
+                                        onChange={(event) =>
+                                          setAssetDraft({
+                                            ...assetDraft,
+                                            payload: {
+                                              ...assetDraft.payload,
+                                              storyboard: {
+                                                shot_number: assetDraft.payload.storyboard?.shot_number ?? 1,
+                                                duration_seconds: assetDraft.payload.storyboard?.duration_seconds,
+                                                transition: event.target.value
+                                              }
+                                            }
+                                          })
+                                        }
+                                        placeholder="如：硬切、淡入"
+                                        className="w-full rounded-2xl border border-[#d8cfc5] bg-[#fcf8f4] px-4 py-3 text-sm text-[#5e5851]"
+                                      />
+                                    </label>
+                                  </div>
+                                ) : null}
                               </div>
                               <button
                                 type="button"
@@ -1054,7 +1499,7 @@ export default function App() {
                                     }
                                     aria-label={`Block ${index + 1} 标签`}
                                     placeholder="点击命名 Block"
-                                    className="min-w-[180px] flex-1 rounded-2xl border border-[#d8cfc5] bg-[#fcf8f4] px-4 py-2.5 text-lg font-semibold tracking-tight text-[#5e5851] placeholder:text-[#b0a598]"
+                                    className="min-w-[180px] w-1/2 max-w-[560px] rounded-2xl border border-[#d8cfc5] bg-[#fcf8f4] px-4 py-2.5 text-lg font-semibold tracking-tight text-[#5e5851] placeholder:text-[#b0a598]"
                                   />
                                     <div className="flex items-center gap-2">
                                       <button
@@ -1072,6 +1517,13 @@ export default function App() {
                                         className="rounded-full border border-[#d8cfc5] bg-[#f8f3ed] px-3 py-1.5 text-xs text-[#7f786f] hover:bg-[#ece5dd] disabled:cursor-not-allowed disabled:opacity-40"
                                       >
                                         下移
+                                      </button>
+                                      <button
+                                        type="button"
+                                        onClick={() => duplicateDraftBlock(block.id)}
+                                        className="rounded-full border border-[#d8cfc5] bg-[#f8f3ed] px-3 py-1.5 text-xs text-[#7f786f] hover:bg-[#ece5dd]"
+                                      >
+                                        复制
                                       </button>
                                       <button
                                         type="button"
@@ -1099,52 +1551,7 @@ export default function App() {
                         </div>
                       </section>
 
-                      <section className="shrink-0 space-y-5">
-                        <article className="rounded-[28px] border border-[#d8cfc5] bg-[#f8f3ed]/90 p-5">
-                          <div className="text-[11px] uppercase tracking-[0.24em] text-[#9a9085]">Export Settings</div>
-                          <div className="mt-4 space-y-4">
-                            <label className="block">
-                              <span className="mb-2 block text-sm text-[#746d65]">拼接分隔符</span>
-                              <input
-                                value={assetDraft.payload.export_settings.separator.replace(/\n/g, "\\n")}
-                                onChange={(event) =>
-                                  setAssetDraft({
-                                    ...assetDraft,
-                                    payload: {
-                                      ...assetDraft.payload,
-                                      export_settings: {
-                                        ...assetDraft.payload.export_settings,
-                                        separator: event.target.value.replace(/\\n/g, "\n")
-                                      }
-                                    }
-                                  })
-                                }
-                                className="w-full rounded-2xl border border-[#d8cfc5] bg-[#fcf8f4] px-4 py-3 text-sm text-[#5e5851]"
-                              />
-                            </label>
-                            <label className="flex items-center gap-3 rounded-2xl border border-[#d8cfc5] bg-[#f3ede6] px-4 py-3 text-sm text-[#6a645c]">
-                              <input
-                                type="checkbox"
-                                checked={assetDraft.payload.export_settings.include_labels}
-                                onChange={(event) =>
-                                  setAssetDraft({
-                                    ...assetDraft,
-                                    payload: {
-                                      ...assetDraft.payload,
-                                      export_settings: {
-                                        ...assetDraft.payload.export_settings,
-                                        include_labels: event.target.checked
-                                      }
-                                    }
-                                  })
-                                }
-                                className="h-4 w-4"
-                              />
-                              导出时包含类型标签
-                            </label>
-                          </div>
-                        </article>
-
+                      <section className="min-h-0 overflow-y-auto pr-1 space-y-5">
                         <article className="rounded-[28px] border border-[#d8cfc5] bg-[#efe8e1] p-5">
                           <div className="text-[11px] uppercase tracking-[0.24em] text-[#9a9085]">Export Preview</div>
                           <pre className="mt-4 max-h-[280px] overflow-y-auto whitespace-pre-wrap break-words text-sm leading-7 text-[#655f58]">
@@ -1173,14 +1580,87 @@ export default function App() {
                             </button>
                             <button
                               type="button"
+                              onClick={() => void handleDuplicateCurrentAsset()}
+                              disabled={!copyTargetFolderId}
+                              className="rounded-2xl border border-[#d8cfc5] bg-[#f8f3ed] px-4 py-3 text-sm text-[#6a645c] hover:bg-[#efe8df] disabled:cursor-not-allowed disabled:opacity-50"
+                            >
+                              复制资产
+                            </button>
+                            <button
+                              type="button"
                               onClick={() => void handleDeleteAsset()}
                               className="rounded-2xl border border-[#d5b8aa] bg-[#efe2da] px-4 py-3 text-sm text-[#9b7769] hover:bg-[#e8d9d0]"
                             >
-                              删除资产
+                              {confirmAssetDelete ? "确认删除" : "删除资产"}
                             </button>
                           </div>
+                          <label className="mt-3 block">
+                            <span className="mb-2 block text-[11px] uppercase tracking-[0.18em] text-[#9a9085]">
+                              复制到目录
+                            </span>
+                            <select
+                              value={copyTargetFolderId ?? ""}
+                              onChange={(event) => setCopyTargetFolderId(event.target.value)}
+                              className="w-full rounded-2xl border border-[#d8cfc5] bg-[#fcf8f4] px-4 py-3 text-sm text-[#5e5851]"
+                            >
+                              {folders.map((folder) => (
+                                <option key={folder.id} value={folder.id}>
+                                  {folder.name}
+                                </option>
+                              ))}
+                            </select>
+                          </label>
                           <div className="mt-3 text-xs text-[#988f84]">
                             自动保存已开启，编辑停止约 0.9 秒后会自动落库。
+                          </div>
+                        </article>
+
+                        <article className="rounded-[28px] border border-[#d8cfc5] bg-[#f8f3ed]/90 p-5">
+                          <div className="text-[11px] uppercase tracking-[0.24em] text-[#9a9085]">Version History</div>
+                          <div className="mt-4 flex gap-2">
+                            <input
+                              value={versionName}
+                              onChange={(event) => setVersionName(event.target.value)}
+                              placeholder="版本名称（可选）"
+                              className="min-w-0 flex-1 rounded-2xl border border-[#d8cfc5] bg-[#fcf8f4] px-4 py-3 text-sm text-[#5e5851] placeholder:text-[#b0a598]"
+                            />
+                            <button
+                              type="button"
+                              onClick={() => void handleCreateVersion()}
+                              className="rounded-2xl bg-[#e2ddd5] px-4 py-3 text-sm font-medium text-[#5a544d] hover:bg-[#d6cec5]"
+                            >
+                              创建版本
+                            </button>
+                          </div>
+                          <div className="mt-4 max-h-[240px] space-y-2 overflow-y-auto">
+                            {(assetDraft.payload.versions ?? []).length > 0 ? (
+                              (assetDraft.payload.versions ?? []).map((version) => (
+                                <div
+                                  key={version.id}
+                                  className="rounded-2xl border border-[#d8cfc5] bg-[#f7f1ea] px-4 py-3"
+                                >
+                                  <div className="flex items-start justify-between gap-3">
+                                    <div className="min-w-0">
+                                      <div className="truncate text-sm font-medium text-[#5b554e]">{version.name}</div>
+                                      <div className="mt-1 text-xs text-[#988f84]">
+                                        {formatTime(version.created_at)}
+                                      </div>
+                                    </div>
+                                    <button
+                                      type="button"
+                                      onClick={() => void handleRestoreVersion(version.id)}
+                                      className="rounded-full border border-[#d8cfc5] bg-[#fcf8f4] px-3 py-1 text-xs text-[#6a645c] hover:bg-[#efe8df]"
+                                    >
+                                      恢复
+                                    </button>
+                                  </div>
+                                </div>
+                              ))
+                            ) : (
+                              <div className="rounded-2xl border border-dashed border-[#d8cfc5] bg-[#fbf7f2] px-4 py-5 text-sm text-[#988f84]">
+                                当前还没有版本快照。
+                              </div>
+                            )}
                           </div>
                         </article>
                       </section>
@@ -1268,10 +1748,19 @@ export default function App() {
                               </div>
                             </div>
                             <div className="flex h-full flex-col justify-center rounded-2xl bg-[#efe8e1] px-4">
-                              <div className="text-[11px] uppercase tracking-[0.18em] text-[#9a9085]">Updated</div>
-                              <div className="mt-2 text-sm font-medium text-[#6d665e]">
-                                {formatTime(asset.updated_at)}
+                              <div className="text-[11px] uppercase tracking-[0.18em] text-[#9a9085]">
+                                {selectedFolder?.type === "project" ? "Shot" : "Updated"}
                               </div>
+                              <div className="mt-2 text-sm font-medium text-[#6d665e]">
+                                {selectedFolder?.type === "project"
+                                  ? `#${String(asset.payload.storyboard?.shot_number ?? 1).padStart(2, "0")}`
+                                  : formatTime(asset.updated_at)}
+                              </div>
+                              {selectedFolder?.type === "project" && asset.payload.storyboard?.duration_seconds ? (
+                                <div className="mt-1 text-xs text-[#988f84]">
+                                  {asset.payload.storyboard.duration_seconds} 秒
+                                </div>
+                              ) : null}
                             </div>
                           </div>
                         </article>

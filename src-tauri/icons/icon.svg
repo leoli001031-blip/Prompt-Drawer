@@ -1,0 +1,41 @@
+<svg width="1024" height="1024" viewBox="0 0 1024 1024" fill="none" xmlns="http://www.w3.org/2000/svg">
+  <defs>
+    <linearGradient id="bgGradient" x1="132" y1="108" x2="908" y2="924" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#FAFAF7"/>
+      <stop offset="1" stop-color="#F2F0EA"/>
+    </linearGradient>
+    <linearGradient id="rearFolderGradient" x1="388" y1="308" x2="794" y2="670" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#E9E5CF"/>
+      <stop offset="1" stop-color="#B6C4A4"/>
+    </linearGradient>
+    <linearGradient id="frontCardGradient" x1="316" y1="454" x2="790" y2="710" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#F1E7D2"/>
+      <stop offset="1" stop-color="#CBD6BE"/>
+    </linearGradient>
+    <linearGradient id="pocketGradient" x1="264" y1="660" x2="760" y2="920" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#F4D5A2"/>
+      <stop offset="1" stop-color="#F1E4C6"/>
+    </linearGradient>
+    <filter id="cardShadow" x="88" y="88" width="848" height="848" filterUnits="userSpaceOnUse" color-interpolation-filters="sRGB">
+      <feDropShadow dx="0" dy="22" stdDeviation="28" flood-color="#D8D5CC" flood-opacity="0.45"/>
+    </filter>
+    <filter id="softShadow" x="182" y="208" width="660" height="612" filterUnits="userSpaceOnUse" color-interpolation-filters="sRGB">
+      <feDropShadow dx="0" dy="10" stdDeviation="18" flood-color="#B8B19D" flood-opacity="0.28"/>
+    </filter>
+  </defs>
+
+  <g filter="url(#cardShadow)">
+    <rect x="140" y="132" width="744" height="760" rx="160" fill="url(#bgGradient)"/>
+  </g>
+
+  <g filter="url(#softShadow)">
+    <path d="M338 338C338 316 356 298 378 298H524C535 298 546 303 553 311L612 370C620 378 631 382 642 382H724C746 382 764 400 764 422V594C764 616 746 634 724 634H378C356 634 338 616 338 594V338Z" fill="url(#rearFolderGradient)" stroke="#AAB39B" stroke-width="4"/>
+    <path d="M282 612C282 588 301 568 325 568H699C723 568 742 588 742 612V788C742 812 723 832 699 832H325C301 832 282 812 282 788V612Z" fill="url(#pocketGradient)" stroke="#D6B37B" stroke-width="4"/>
+    <path d="M306 460C306 438 324 420 346 420H670C692 420 710 438 710 460V646C710 668 692 686 670 686H346C324 686 306 668 306 646V460Z" fill="url(#frontCardGradient)" stroke="#F7F5EE" stroke-width="5"/>
+    <path d="M430 782C460 782 464 730 512 730C560 730 564 782 594 782" stroke="#F7F5EE" stroke-width="12" stroke-linecap="round"/>
+  </g>
+
+  <path d="M430 530L394 550L430 570" stroke="#555A5E" stroke-width="18" stroke-linecap="round" stroke-linejoin="round"/>
+  <path d="M518 530L554 550L518 570" stroke="#555A5E" stroke-width="18" stroke-linecap="round" stroke-linejoin="round"/>
+  <path d="M620 516L630 542L656 552L630 562L620 588L610 562L584 552L610 542L620 516Z" fill="#555A5E"/>
+</svg>
