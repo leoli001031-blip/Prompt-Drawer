@@ -1,9 +1,10 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+use reqwest::Client;
 use rusqlite::{params, Connection};
 use serde::{Deserialize, Serialize};
-use serde_json::json;
-use std::time::{SystemTime, UNIX_EPOCH};
+use serde_json::{json, Value};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use tauri::{AppHandle, Manager};
 use uuid::Uuid;
 
@@ -98,6 +99,107 @@ struct UpdatePromptAssetInput {
     is_favorite: bool,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct AiProviderProfile {
+    id: String,
+    name: String,
+    kind: String,
+    base_url: String,
+    api_key: String,
+    model: String,
+    temperature: f64,
+    max_tokens: Option<u32>,
+    is_default: bool,
+    created_at: i64,
+    updated_at: i64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct AiSettingsSnapshot {
+    default_profile_id: Option<String>,
+    profiles: Vec<AiProviderProfile>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+struct SaveAiProfileInput {
+    id: Option<String>,
+    name: String,
+    kind: String,
+    base_url: String,
+    api_key: String,
+    model: String,
+    temperature: f64,
+    max_tokens: Option<u32>,
+    is_default: bool,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+struct AiTaskBlockInput {
+    id: String,
+    #[serde(rename = "type")]
+    block_type: String,
+    label: String,
+    content: String,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+struct AiTaskInput {
+    profile_id: String,
+    task_type: String,
+    folder_type: String,
+    asset_title: String,
+    tags: Vec<String>,
+    blocks: Vec<AiTaskBlockInput>,
+    target_block_id: Option<String>,
+    user_instruction: Option<String>,
+    context_remark: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct AiUsage {
+    prompt_tokens: Option<u32>,
+    completion_tokens: Option<u32>,
+    total_tokens: Option<u32>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct AiTaskResult {
+    text: String,
+    raw_model: Option<String>,
+    usage: Option<AiUsage>,
+}
+
+#[derive(Debug, Serialize)]
+struct ChatCompletionRequest<'a> {
+    model: &'a str,
+    temperature: f64,
+    max_tokens: Option<u32>,
+    messages: Vec<ChatCompletionMessage<'a>>,
+}
+
+#[derive(Debug, Serialize)]
+struct ChatCompletionMessage<'a> {
+    role: &'a str,
+    content: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct ChatCompletionResponse {
+    model: Option<String>,
+    choices: Vec<ChatCompletionChoice>,
+    usage: Option<AiUsage>,
+}
+
+#[derive(Debug, Deserialize)]
+struct ChatCompletionChoice {
+    message: ChatCompletionMessageResponse,
+}
+
+#[derive(Debug, Deserialize)]
+struct ChatCompletionMessageResponse {
+    content: Value,
+}
+
 fn now_ts() -> i64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -121,6 +223,297 @@ fn database_path(app: &AppHandle) -> CommandResult<std::path::PathBuf> {
     let app_dir = app.path().app_data_dir().map_err(|error| error.to_string())?;
     std::fs::create_dir_all(&app_dir).map_err(|error| error.to_string())?;
     Ok(app_dir.join("prompt_workbench.sqlite3"))
+}
+
+fn ai_settings_path(app: &AppHandle) -> CommandResult<std::path::PathBuf> {
+    let app_dir = app.path().app_data_dir().map_err(|error| error.to_string())?;
+    std::fs::create_dir_all(&app_dir).map_err(|error| error.to_string())?;
+    Ok(app_dir.join("ai_profiles.json"))
+}
+
+fn normalize_base_url(value: &str) -> String {
+    value.trim_end_matches('/').to_string()
+}
+
+fn normalize_ai_settings(snapshot: AiSettingsSnapshot) -> AiSettingsSnapshot {
+    let explicit_default = snapshot
+        .profiles
+        .iter()
+        .find(|profile| profile.is_default)
+        .map(|profile| profile.id.clone())
+        .or(snapshot.default_profile_id.clone());
+
+    let default_profile_id = explicit_default
+        .filter(|profile_id| snapshot.profiles.iter().any(|profile| &profile.id == profile_id))
+        .or_else(|| snapshot.profiles.first().map(|profile| profile.id.clone()));
+
+    AiSettingsSnapshot {
+        default_profile_id: default_profile_id.clone(),
+        profiles: snapshot
+            .profiles
+            .into_iter()
+            .map(|profile| AiProviderProfile {
+                is_default: default_profile_id
+                    .as_ref()
+                    .map(|profile_id| profile_id == &profile.id)
+                    .unwrap_or(false),
+                ..profile
+            })
+            .collect(),
+    }
+}
+
+fn load_ai_settings(app: &AppHandle) -> CommandResult<AiSettingsSnapshot> {
+    let path = ai_settings_path(app)?;
+    if !path.exists() {
+        return Ok(AiSettingsSnapshot {
+            default_profile_id: None,
+            profiles: vec![],
+        });
+    }
+
+    let raw = std::fs::read_to_string(path).map_err(|error| error.to_string())?;
+    let parsed = serde_json::from_str::<AiSettingsSnapshot>(&raw).map_err(|error| error.to_string())?;
+    Ok(normalize_ai_settings(parsed))
+}
+
+fn write_ai_settings(app: &AppHandle, snapshot: &AiSettingsSnapshot) -> CommandResult<AiSettingsSnapshot> {
+    let normalized = normalize_ai_settings(snapshot.clone());
+    let raw = serde_json::to_string_pretty(&normalized).map_err(|error| error.to_string())?;
+    std::fs::write(ai_settings_path(app)?, raw).map_err(|error| error.to_string())?;
+    Ok(normalized)
+}
+
+fn build_ai_profile(input: SaveAiProfileInput, existing: Option<&AiProviderProfile>) -> AiProviderProfile {
+    let created_at = existing.map(|profile| profile.created_at).unwrap_or_else(now_ts);
+    AiProviderProfile {
+        id: input.id.unwrap_or_else(|| existing.map(|profile| profile.id.clone()).unwrap_or_else(|| make_id("profile"))),
+        name: if input.name.trim().is_empty() {
+            "未命名模型配置".into()
+        } else {
+            input.name.trim().into()
+        },
+        kind: if input.kind.trim().is_empty() {
+            "openai_compatible".into()
+        } else {
+            input.kind.trim().into()
+        },
+        base_url: normalize_base_url(&input.base_url),
+        api_key: input.api_key.trim().into(),
+        model: input.model.trim().into(),
+        temperature: input.temperature.clamp(0.0, 2.0),
+        max_tokens: input.max_tokens,
+        is_default: input.is_default,
+        created_at,
+        updated_at: now_ts(),
+    }
+}
+
+fn validate_ai_profile(profile: &AiProviderProfile) -> CommandResult<()> {
+    if profile.kind != "openai_compatible" {
+        return Err("仅支持 OpenAI-compatible 接口。".into());
+    }
+    if profile.base_url.trim().is_empty() {
+        return Err("Base URL 不能为空。".into());
+    }
+    if profile.api_key.trim().is_empty() {
+        return Err("API Key 不能为空。".into());
+    }
+    if profile.model.trim().is_empty() {
+        return Err("Model 不能为空。".into());
+    }
+    Ok(())
+}
+
+fn extract_response_text(content: &Value) -> String {
+    match content {
+        Value::String(text) => text.trim().to_string(),
+        Value::Array(items) => items
+            .iter()
+            .map(|item| {
+                item.get("text")
+                    .and_then(Value::as_str)
+                    .map(|text| text.trim().to_string())
+                    .unwrap_or_default()
+            })
+            .collect::<Vec<_>>()
+            .join(""),
+        _ => String::new(),
+    }
+}
+
+fn build_ai_system_prompt(task_type: &str) -> &'static str {
+    match task_type {
+        "rewrite_block" => {
+            "你是专业提示词编辑助手。请在保留原意的前提下改写目标 Block，让它更清晰、更具体、可直接用于 AI 生成。只输出改写后的正文，不要解释。"
+        }
+        "expand_block" => {
+            "你是专业提示词编辑助手。请扩写目标 Block，让描述更丰富、层次更完整，但不要脱离原意。只输出扩写后的正文，不要解释。"
+        }
+        "compress_block" => {
+            "你是专业提示词编辑助手。请压缩目标 Block，让内容更短、更干净、更适合提示词场景。只输出压缩后的正文，不要解释。"
+        }
+        _ => {
+            "你是专业提示词写作助手。请根据给定的资产标题、标签和已有 Block，生成一段更完整、可直接复制使用的提示词。只输出最终提示词正文，不要解释，不要加引号。"
+        }
+    }
+}
+
+fn build_ai_user_prompt(input: &AiTaskInput) -> String {
+    let blocks = input
+        .blocks
+        .iter()
+        .enumerate()
+        .map(|(index, block)| {
+            let label = if block.label.trim().is_empty() {
+                "未命名 Block"
+            } else {
+                block.label.trim()
+            };
+            let content = if block.content.trim().is_empty() {
+                "（空）"
+            } else {
+                block.content.trim()
+            };
+            format!("{}. [{} / {}]\n{}", index + 1, label, block.block_type, content)
+        })
+        .collect::<Vec<_>>()
+        .join("\n\n");
+
+    let target_block = input
+        .target_block_id
+        .as_ref()
+        .and_then(|target_id| input.blocks.iter().find(|block| &block.id == target_id));
+
+    [
+        format!(
+            "资产标题：{}",
+            if input.asset_title.trim().is_empty() {
+                "未命名资产"
+            } else {
+                input.asset_title.trim()
+            }
+        ),
+        format!(
+            "目录类型：{}",
+            if input.folder_type == "project" {
+                "项目分镜"
+            } else {
+                "提示词库"
+            }
+        ),
+        if input.tags.is_empty() {
+            String::new()
+        } else {
+            format!("标签：{}", input.tags.join("，"))
+        },
+        input
+            .context_remark
+            .as_ref()
+            .filter(|remark| !remark.trim().is_empty())
+            .map(|remark| format!("备注：{}", remark.trim()))
+            .unwrap_or_default(),
+        String::new(),
+        "当前 Blocks：".into(),
+        if blocks.is_empty() {
+            "（没有可用 Block）".into()
+        } else {
+            blocks
+        },
+        String::new(),
+        target_block
+            .map(|block| {
+                format!(
+                    "目标 Block：{}\n{}",
+                    if block.label.trim().is_empty() {
+                        "未命名 Block"
+                    } else {
+                        block.label.trim()
+                    },
+                    if block.content.trim().is_empty() {
+                        "（空）"
+                    } else {
+                        block.content.trim()
+                    }
+                )
+            })
+            .unwrap_or_default(),
+        input
+            .user_instruction
+            .as_ref()
+            .filter(|instruction| !instruction.trim().is_empty())
+            .map(|instruction| format!("用户补充要求：{}", instruction.trim()))
+            .unwrap_or_default(),
+    ]
+    .into_iter()
+    .filter(|line| !line.is_empty())
+    .collect::<Vec<_>>()
+    .join("\n")
+}
+
+async fn run_openai_compatible_request(
+    profile: &AiProviderProfile,
+    input: &AiTaskInput,
+) -> CommandResult<AiTaskResult> {
+    validate_ai_profile(profile)?;
+
+    let client = Client::builder()
+        .connect_timeout(Duration::from_secs(15))
+        .timeout(Duration::from_secs(60))
+        .build()
+        .map_err(|error| error.to_string())?;
+
+    let response = client
+        .post(format!("{}/chat/completions", normalize_base_url(&profile.base_url)))
+        .bearer_auth(profile.api_key.trim())
+        .json(&ChatCompletionRequest {
+            model: profile.model.trim(),
+            temperature: profile.temperature,
+            max_tokens: profile.max_tokens,
+            messages: vec![
+                ChatCompletionMessage {
+                    role: "system",
+                    content: build_ai_system_prompt(&input.task_type).to_string(),
+                },
+                ChatCompletionMessage {
+                    role: "user",
+                    content: build_ai_user_prompt(input),
+                },
+            ],
+        })
+        .send()
+        .await
+        .map_err(|error| error.to_string())?;
+    let status = response.status();
+
+    if !status.is_success() {
+        let detail = response.text().await.unwrap_or_default();
+        return Err(if detail.trim().is_empty() {
+            format!("AI 请求失败（{}）。", status)
+        } else {
+            detail
+        });
+    }
+
+    let payload = response
+        .json::<ChatCompletionResponse>()
+        .await
+        .map_err(|error| error.to_string())?;
+    let text = payload
+        .choices
+        .first()
+        .map(|choice| extract_response_text(&choice.message.content))
+        .unwrap_or_default();
+
+    if text.is_empty() {
+        return Err("模型没有返回可用文本。".into());
+    }
+
+    Ok(AiTaskResult {
+        text,
+        raw_model: payload.model,
+        usage: payload.usage,
+    })
 }
 
 fn open_database(app: &AppHandle) -> CommandResult<Connection> {
@@ -492,6 +885,114 @@ fn workbench_delete_prompt_asset(app: AppHandle, asset_id: String) -> CommandRes
     build_snapshot(&connection)
 }
 
+#[tauri::command]
+fn ai_list_profiles(app: AppHandle) -> CommandResult<AiSettingsSnapshot> {
+    load_ai_settings(&app)
+}
+
+#[tauri::command]
+fn ai_save_profile(app: AppHandle, input: SaveAiProfileInput) -> CommandResult<AiSettingsSnapshot> {
+    let current = load_ai_settings(&app)?;
+    let existing = input
+        .id
+        .as_ref()
+        .and_then(|profile_id| current.profiles.iter().find(|profile| &profile.id == profile_id));
+    let next_profile = build_ai_profile(input, existing);
+    validate_ai_profile(&next_profile)?;
+
+    let profiles = if current.profiles.iter().any(|profile| profile.id == next_profile.id) {
+        current
+            .profiles
+            .iter()
+            .cloned()
+            .map(|profile| {
+                if profile.id == next_profile.id {
+                    next_profile.clone()
+                } else {
+                    profile
+                }
+            })
+            .collect::<Vec<_>>()
+    } else {
+        let mut next = vec![next_profile.clone()];
+        next.extend(current.profiles.clone());
+        next
+    };
+
+    write_ai_settings(
+        &app,
+        &AiSettingsSnapshot {
+            default_profile_id: if next_profile.is_default {
+                Some(next_profile.id.clone())
+            } else {
+                current.default_profile_id.clone()
+            },
+            profiles,
+        },
+    )
+}
+
+#[tauri::command]
+fn ai_delete_profile(app: AppHandle, profile_id: String) -> CommandResult<AiSettingsSnapshot> {
+    let current = load_ai_settings(&app)?;
+    write_ai_settings(
+        &app,
+        &AiSettingsSnapshot {
+            default_profile_id: if current.default_profile_id.as_deref() == Some(profile_id.as_str()) {
+                None
+            } else {
+                current.default_profile_id.clone()
+            },
+            profiles: current
+                .profiles
+                .into_iter()
+                .filter(|profile| profile.id != profile_id)
+                .collect(),
+        },
+    )
+}
+
+#[tauri::command]
+async fn ai_test_profile(_app: AppHandle, input: SaveAiProfileInput) -> CommandResult<String> {
+    let profile = build_ai_profile(input, None);
+    validate_ai_profile(&profile)?;
+
+    let result = run_openai_compatible_request(
+        &profile,
+        &AiTaskInput {
+            profile_id: profile.id.clone(),
+            task_type: "compress_block".into(),
+            folder_type: "library".into(),
+            asset_title: "连接测试".into(),
+            tags: vec![],
+            blocks: vec![AiTaskBlockInput {
+                id: "test_block".into(),
+                block_type: "custom".into(),
+                label: "".into(),
+                content: "请只回复 OK".into(),
+            }],
+            target_block_id: Some("test_block".into()),
+            user_instruction: Some("请只回复 OK".into()),
+            context_remark: None,
+        },
+    )
+    .await?;
+
+    Ok(result.text)
+}
+
+#[tauri::command]
+async fn ai_run_task(app: AppHandle, input: AiTaskInput) -> CommandResult<AiTaskResult> {
+    let settings = load_ai_settings(&app)?;
+    let profile = settings
+        .profiles
+        .iter()
+        .find(|profile| profile.id == input.profile_id)
+        .ok_or_else(|| "未找到对应的 AI 配置。".to_string())?;
+
+    run_openai_compatible_request(profile, &input).await
+}
+
 fn main() {
     tauri::Builder::default()
         .invoke_handler(tauri::generate_handler![
@@ -506,7 +1007,12 @@ fn main() {
             workbench_delete_folder,
             workbench_create_prompt_asset,
             workbench_update_prompt_asset,
-            workbench_delete_prompt_asset
+            workbench_delete_prompt_asset,
+            ai_list_profiles,
+            ai_save_profile,
+            ai_delete_profile,
+            ai_test_profile,
+            ai_run_task
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

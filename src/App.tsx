@@ -1,5 +1,15 @@
 import { useEffect, useMemo, useState, type PointerEvent as ReactPointerEvent } from "react";
 import {
+  createAiProfileDraft,
+  deleteAiProfile,
+  findAiProfile,
+  getDefaultAiProfile,
+  loadAiSettings,
+  runAiTask,
+  saveAiProfile,
+  testAiProfile
+} from "./lib/ai";
+import {
   appendVersion,
   buildExportPreview,
   buildProjectScript,
@@ -28,6 +38,12 @@ import {
   updateFolder,
   updatePromptAsset
 } from "./lib/workbench";
+import type {
+  AiProfileDraft,
+  AiSettingsSnapshot,
+  AiTaskResult,
+  AiTaskType
+} from "./types/ai";
 import type { PromptBlock } from "./types/prompt";
 import type {
   FolderRecord,
@@ -67,6 +83,10 @@ function isBlockControlTarget(target: EventTarget | null): boolean {
   }
 
   return Boolean(target.closest("textarea, select, input, button"));
+}
+
+function stopPointerPropagation(event: ReactPointerEvent<HTMLElement>): void {
+  event.stopPropagation();
 }
 
 interface FolderContextMenuState {
@@ -125,9 +145,24 @@ async function copyText(value: string): Promise<boolean> {
   return true;
 }
 
+function formatAiTaskLabel(taskType: AiTaskType): string {
+  switch (taskType) {
+    case "rewrite_block":
+      return "改写当前 Block";
+    case "expand_block":
+      return "扩写当前 Block";
+    case "compress_block":
+      return "压缩当前 Block";
+    case "generate_from_asset":
+    default:
+      return "生成完整提示词";
+  }
+}
+
 export default function App() {
   const [snapshot, setSnapshot] = useState<WorkbenchSnapshot | null>(null);
   const [storageDescriptor, setStorageDescriptor] = useState<StorageDescriptor | null>(null);
+  const [aiSettings, setAiSettings] = useState<AiSettingsSnapshot>({ default_profile_id: null, profiles: [] });
   const [selectedFolderId, setSelectedFolderId] = useState<string | null>(null);
   const [activeAssetId, setActiveAssetId] = useState<string | null>(null);
   const [drawerOpen, setDrawerOpen] = useState(false);
@@ -152,12 +187,29 @@ export default function App() {
   const [isEditingAssetTitle, setIsEditingAssetTitle] = useState(false);
   const [folderContextMenu, setFolderContextMenu] = useState<FolderContextMenuState | null>(null);
   const [assetContextMenu, setAssetContextMenu] = useState<AssetContextMenuState | null>(null);
+  const [aiSettingsOpen, setAiSettingsOpen] = useState(false);
+  const [selectedAiProfileId, setSelectedAiProfileId] = useState<string | null>(null);
+  const [aiProfileDraft, setAiProfileDraft] = useState<AiProfileDraft>(() => createAiProfileDraft());
+  const [aiTaskType, setAiTaskType] = useState<AiTaskType>("rewrite_block");
+  const [aiTargetBlockId, setAiTargetBlockId] = useState<string | null>(null);
+  const [aiInstruction, setAiInstruction] = useState("");
+  const [aiResult, setAiResult] = useState<AiTaskResult | null>(null);
+  const [aiRunning, setAiRunning] = useState(false);
+  const [aiRunMessage, setAiRunMessage] = useState("");
+  const [aiTesting, setAiTesting] = useState(false);
+  const [aiTestMessage, setAiTestMessage] = useState("");
+  const [aiPanelOpen, setAiPanelOpen] = useState(false);
 
   useEffect(() => {
-    void Promise.all([loadWorkbenchSnapshot(), getStorageDescriptor()]).then(
-      ([nextSnapshot, nextStorageDescriptor]) => {
+    void Promise.all([loadWorkbenchSnapshot(), getStorageDescriptor(), loadAiSettings()]).then(
+      ([nextSnapshot, nextStorageDescriptor, nextAiSettings]) => {
         setSnapshot(nextSnapshot);
         setStorageDescriptor(nextStorageDescriptor);
+        setAiSettings(nextAiSettings);
+        setSelectedAiProfileId(
+          getDefaultAiProfile(nextAiSettings)?.id ?? nextAiSettings.profiles[0]?.id ?? null
+        );
+        setAiProfileDraft(createAiProfileDraft(getDefaultAiProfile(nextAiSettings)));
         setSelectedFolderId(nextSnapshot.folders[0]?.id ?? null);
         setStatusMessage("工作台已加载。");
       }
@@ -194,6 +246,11 @@ export default function App() {
     [folderAssets, selectedFolder?.type]
   );
   const activeAsset = assets.find((asset) => asset.id === activeAssetId) ?? null;
+  const activeAiProfile =
+    findAiProfile(aiSettings, selectedAiProfileId) ??
+    getDefaultAiProfile(aiSettings) ??
+    aiSettings.profiles[0] ??
+    null;
   const exportPreview = assetDraft ? buildExportPreview(assetDraft.payload) : "";
   const draftIsDirty = useMemo(
     () => assetFingerprint(assetDraft) !== assetFingerprint(activeAsset),
@@ -221,6 +278,25 @@ export default function App() {
       setSortMode("updated_desc");
     }
   }, [selectedFolder?.type, selectedFolderId]);
+
+  useEffect(() => {
+    if (activeAiProfile) {
+      setSelectedAiProfileId(activeAiProfile.id);
+    }
+  }, [activeAiProfile?.id]);
+
+  useEffect(() => {
+    if (!assetDraft) {
+      setAiTargetBlockId(null);
+      setAiResult(null);
+      return;
+    }
+
+    const fallbackTarget = assetDraft.payload.blocks[0]?.id ?? null;
+    setAiTargetBlockId((current) =>
+      current && assetDraft.payload.blocks.some((block) => block.id === current) ? current : fallbackTarget
+    );
+  }, [assetDraft]);
 
   useEffect(() => {
     if (!assetDraft || !activeAsset || !draftIsDirty) {
@@ -270,12 +346,17 @@ export default function App() {
   }, [draftIsDirty]);
 
   useEffect(() => {
-    if (!drawerOpen) {
+    if (!drawerOpen && !aiSettingsOpen) {
       return;
     }
 
     const handleEscape = (event: KeyboardEvent) => {
       if (event.key !== "Escape" || event.defaultPrevented) {
+        return;
+      }
+
+      if (aiSettingsOpen) {
+        setAiSettingsOpen(false);
         return;
       }
 
@@ -299,12 +380,17 @@ export default function App() {
         return;
       }
 
+      if (aiPanelOpen) {
+        setAiPanelOpen(false);
+        return;
+      }
+
       closeDrawer();
     };
 
     window.addEventListener("keydown", handleEscape);
     return () => window.removeEventListener("keydown", handleEscape);
-  }, [assetContextMenu, drawerOpen, folderContextMenu, importPanelOpen, isEditingAssetTitle]);
+  }, [aiPanelOpen, aiSettingsOpen, assetContextMenu, drawerOpen, folderContextMenu, importPanelOpen, isEditingAssetTitle]);
 
   function applySnapshot(nextSnapshot: WorkbenchSnapshot, message: string): WorkbenchSnapshot {
     setSnapshot(nextSnapshot);
@@ -317,6 +403,7 @@ export default function App() {
     closeFolderContextMenu();
     setActiveAssetId(assetId);
     setDrawerOpen(true);
+    setAiPanelOpen(false);
   }
 
   function closeDrawer(): void {
@@ -326,6 +413,7 @@ export default function App() {
     setDragOverBlockId(null);
     setIsEditingAssetTitle(false);
     setConfirmAssetDelete(false);
+    setAiPanelOpen(false);
   }
 
   function closeFolderContextMenu(): void {
@@ -731,6 +819,172 @@ export default function App() {
     }
   }
 
+  function beginCreateAiProfile(): void {
+    setAiProfileDraft({
+      ...createAiProfileDraft(),
+      is_default: aiSettings.profiles.length === 0
+    });
+    setAiTestMessage("");
+  }
+
+  function selectAiProfile(profileId: string): void {
+    const profile = findAiProfile(aiSettings, profileId);
+    if (!profile) {
+      return;
+    }
+
+    setSelectedAiProfileId(profile.id);
+    setAiProfileDraft(createAiProfileDraft(profile));
+    setAiTestMessage("");
+  }
+
+  async function handleSaveAiProfile(): Promise<void> {
+    const nextSettings = await saveAiProfile(aiProfileDraft);
+    const nextProfile =
+      (aiProfileDraft.id
+        ? findAiProfile(nextSettings, aiProfileDraft.id)
+        : nextSettings.profiles[0]) ?? null;
+    setAiSettings(nextSettings);
+    const profileId = nextProfile?.id ?? nextSettings.default_profile_id ?? nextSettings.profiles[0]?.id ?? null;
+    setSelectedAiProfileId(profileId);
+    setAiProfileDraft(createAiProfileDraft(findAiProfile(nextSettings, profileId)));
+    setAiTestMessage("AI 配置已保存。");
+    setStatusMessage("AI 配置已保存。");
+  }
+
+  async function handleDeleteAiProfile(): Promise<void> {
+    if (!aiProfileDraft.id) {
+      setAiProfileDraft(createAiProfileDraft());
+      return;
+    }
+
+    const nextSettings = await deleteAiProfile(aiProfileDraft.id);
+    const nextProfileId = nextSettings.default_profile_id ?? nextSettings.profiles[0]?.id ?? null;
+    setAiSettings(nextSettings);
+    setSelectedAiProfileId(nextProfileId);
+    setAiProfileDraft(createAiProfileDraft(findAiProfile(nextSettings, nextProfileId)));
+    setAiTestMessage("AI 配置已删除。");
+    setStatusMessage("AI 配置已删除。");
+  }
+
+  async function handleTestAiProfile(): Promise<void> {
+    setAiTesting(true);
+    setAiTestMessage("");
+    try {
+      const result = await testAiProfile(aiProfileDraft);
+      setAiTestMessage(`连接成功：${result}`);
+    } catch (error) {
+      setAiTestMessage(error instanceof Error ? error.message : "连接测试失败。");
+    } finally {
+      setAiTesting(false);
+    }
+  }
+
+  async function handleRunAi(): Promise<void> {
+    if (!assetDraft) {
+      return;
+    }
+
+    if (!activeAiProfile) {
+      setAiRunMessage("请先配置 AI 模型。");
+      return;
+    }
+
+    if (aiTaskType !== "generate_from_asset" && !aiTargetBlockId) {
+      setAiRunMessage("请先选择一个目标 Block。");
+      return;
+    }
+
+    setAiRunning(true);
+    setAiRunMessage("");
+    setAiResult(null);
+
+    try {
+      const result = await runAiTask({
+        profile_id: activeAiProfile.id,
+        task_type: aiTaskType,
+        folder_type: selectedFolder?.type ?? "library",
+        asset_title: assetDraft.title,
+        tags: assetDraft.payload.tags,
+        blocks: assetDraft.payload.blocks.map((block) => ({
+          id: block.id,
+          type: block.type,
+          label: block.label ?? "",
+          content: block.content
+        })),
+        target_block_id: aiTaskType === "generate_from_asset" ? null : aiTargetBlockId,
+        user_instruction: aiInstruction,
+        context_remark: assetDraft.payload.remark
+      });
+      setAiResult(result);
+      setAiRunMessage("AI 已返回结果。");
+    } catch (error) {
+      setAiRunMessage(error instanceof Error ? error.message : "AI 请求失败。");
+    } finally {
+      setAiRunning(false);
+    }
+  }
+
+  function applyAiVersionSnapshot(taskLabel: string, nextTitle: string, nextBlocks: PromptBlock[]): void {
+    if (!assetDraft) {
+      return;
+    }
+
+    const version = createVersionSnapshot(assetDraft, `AI ${taskLabel}`);
+    setAssetDraft({
+      ...assetDraft,
+      title: nextTitle,
+      payload: appendVersion(
+        {
+          ...assetDraft.payload,
+          blocks: nextBlocks
+        },
+        version
+      )
+    });
+    setStatusMessage("AI 结果已写入当前资产。");
+  }
+
+  function handleApplyAiToTargetBlock(): void {
+    if (!assetDraft || !aiResult?.text || !aiTargetBlockId) {
+      return;
+    }
+
+    const nextBlocks = assetDraft.payload.blocks.map((block) =>
+      block.id === aiTargetBlockId ? { ...block, content: aiResult.text } : block
+    );
+    applyAiVersionSnapshot(formatAiTaskLabel(aiTaskType), assetDraft.title, nextBlocks);
+  }
+
+  function handleAppendAiAsBlock(): void {
+    if (!assetDraft || !aiResult?.text) {
+      return;
+    }
+
+    const sourceBlock = aiTargetBlockId
+      ? assetDraft.payload.blocks.find((block) => block.id === aiTargetBlockId) ?? null
+      : null;
+    const nextBlock: PromptBlock = {
+      ...createBlock(sourceBlock?.type ?? "custom"),
+      label: sourceBlock?.label?.trim() ?? "",
+      content: aiResult.text
+    };
+    applyAiVersionSnapshot(formatAiTaskLabel(aiTaskType), assetDraft.title, [
+      ...assetDraft.payload.blocks,
+      nextBlock
+    ]);
+  }
+
+  async function handleCopyAiResult(): Promise<void> {
+    if (!aiResult?.text) {
+      return;
+    }
+
+    if (await copyText(aiResult.text)) {
+      setAiRunMessage("AI 结果已复制。");
+    }
+  }
+
   function updateDraftBlock(blockId: string, patch: Partial<PromptBlock>): void {
     if (!assetDraft) {
       return;
@@ -797,28 +1051,6 @@ export default function App() {
     });
   }
 
-  function moveDraftBlockByOffset(blockId: string, offset: -1 | 1): void {
-    setAssetDraft((current) => {
-      if (!current) {
-        return current;
-      }
-
-      const fromIndex = current.payload.blocks.findIndex((block) => block.id === blockId);
-      const toIndex = fromIndex + offset;
-      if (fromIndex === -1 || toIndex < 0 || toIndex >= current.payload.blocks.length) {
-        return current;
-      }
-
-      return {
-        ...current,
-        payload: {
-          ...current.payload,
-          blocks: reorderBlocks(current.payload.blocks, fromIndex, toIndex)
-        }
-      };
-    });
-  }
-
   function handleBlockPointerDown(event: ReactPointerEvent<HTMLElement>, blockId: string): void {
     if (isBlockControlTarget(event.target)) {
       return;
@@ -843,6 +1075,11 @@ export default function App() {
   }
 
   function handleBlockDragEnd(): void {
+    setDraggingBlockId(null);
+    setDragOverBlockId(null);
+  }
+
+  function clearBlockDragState(): void {
     setDraggingBlockId(null);
     setDragOverBlockId(null);
   }
@@ -886,13 +1123,24 @@ export default function App() {
           </div>
 
           <div className="border-b border-[#d8cfc5] p-3">
-            <div className="flex justify-center">
+            <div className="grid gap-2">
               <button
                 type="button"
                 onClick={() => void handleCreateFolder("library")}
-                className="min-w-[148px] rounded-2xl bg-[#a8b7ad] px-5 py-2 text-sm font-medium text-[#4e4943] hover:bg-[#97a79d]"
+                className="rounded-2xl bg-[#a8b7ad] px-5 py-2 text-sm font-medium text-[#4e4943] hover:bg-[#97a79d]"
               >
                 新建提示词库
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  setAiSettingsOpen(true);
+                  setAiProfileDraft(createAiProfileDraft(activeAiProfile));
+                  setAiTestMessage("");
+                }}
+                className="rounded-2xl border border-[#d8cfc5] bg-[#f8f3ed] px-5 py-2 text-sm text-[#6a645c] hover:bg-[#efe8df]"
+              >
+                AI 配置
               </button>
             </div>
           </div>
@@ -1126,6 +1374,185 @@ export default function App() {
               >
                 直接删除
               </button>
+            </div>
+          </>
+        ) : null}
+
+        {aiSettingsOpen ? (
+          <>
+            <div
+              className="fixed inset-0 z-40 bg-[#5f584f]/18 backdrop-blur-[2px]"
+              onClick={() => setAiSettingsOpen(false)}
+            />
+            <div className="fixed inset-x-0 top-8 z-50 mx-auto w-[min(920px,calc(100vw-40px))] rounded-[28px] border border-[#d8cfc5] bg-[#fffaf5] p-5 shadow-[0_24px_80px_rgba(116,106,94,0.18)]">
+              <div className="flex items-start justify-between gap-4">
+                <div>
+                  <div className="text-[11px] uppercase tracking-[0.24em] text-[#9a9085]">AI Settings</div>
+                  <h3 className="mt-2 text-2xl font-semibold tracking-tight text-[#5b554e]">模型配置</h3>
+                  <p className="mt-2 text-sm leading-6 text-[#8b8379]">
+                    当前先支持 OpenAI-compatible 接口。你可以自定义 Base URL、API Key 和模型名称。
+                  </p>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => setAiSettingsOpen(false)}
+                  className="rounded-2xl border border-[#d8cfc5] bg-[#f8f3ed] px-3 py-2 text-sm text-[#6a645c] hover:bg-[#efe8df]"
+                >
+                  关闭
+                </button>
+              </div>
+
+              <div className="mt-5 grid gap-5 md:grid-cols-[220px_minmax(0,1fr)]">
+                <div className="space-y-3">
+                  <button
+                    type="button"
+                    onClick={beginCreateAiProfile}
+                    className="w-full rounded-2xl bg-[#e2ddd5] px-4 py-3 text-sm font-medium text-[#5a544d] hover:bg-[#d6cec5]"
+                  >
+                    新建模型配置
+                  </button>
+                  <div className="max-h-[420px] space-y-2 overflow-y-auto pr-1">
+                    {aiSettings.profiles.map((profile) => (
+                      <button
+                        key={profile.id}
+                        type="button"
+                        onClick={() => selectAiProfile(profile.id)}
+                        className={[
+                          "w-full rounded-2xl border px-3 py-3 text-left transition",
+                          aiProfileDraft.id === profile.id
+                            ? "border-[#adbbb0] bg-[#dde5df]"
+                            : "border-[#ddd5cc] bg-[#f8f3ed] hover:border-[#cbc0b4] hover:bg-[#f1ebe3]"
+                        ].join(" ")}
+                      >
+                        <div className="truncate text-sm font-medium text-[#5b554e]">{profile.name}</div>
+                        <div className="mt-1 truncate text-xs text-[#988f84]">{profile.model}</div>
+                        {profile.is_default ? (
+                          <div className="mt-2 text-[11px] uppercase tracking-[0.18em] text-[#7d9187]">Default</div>
+                        ) : null}
+                      </button>
+                    ))}
+                    {aiSettings.profiles.length === 0 ? (
+                      <div className="rounded-2xl border border-dashed border-[#d8cfc5] bg-[#fbf7f2] px-4 py-5 text-sm text-[#988f84]">
+                        还没有 AI 模型配置。
+                      </div>
+                    ) : null}
+                  </div>
+                </div>
+
+                <div className="grid gap-4">
+                  <div className="grid gap-4 md:grid-cols-2">
+                    <label className="block">
+                      <span className="mb-2 block text-[11px] uppercase tracking-[0.18em] text-[#9a9085]">Profile Name</span>
+                      <input
+                        value={aiProfileDraft.name}
+                        onChange={(event) => setAiProfileDraft({ ...aiProfileDraft, name: event.target.value })}
+                        placeholder="例如：OpenAI 主力模型"
+                        className="w-full rounded-2xl border border-[#d8cfc5] bg-[#fcf8f4] px-4 py-3 text-sm text-[#5e5851] placeholder:text-[#b0a598]"
+                      />
+                    </label>
+                    <label className="block">
+                      <span className="mb-2 block text-[11px] uppercase tracking-[0.18em] text-[#9a9085]">Model</span>
+                      <input
+                        value={aiProfileDraft.model}
+                        onChange={(event) => setAiProfileDraft({ ...aiProfileDraft, model: event.target.value })}
+                        placeholder="例如：gpt-4.1-mini"
+                        className="w-full rounded-2xl border border-[#d8cfc5] bg-[#fcf8f4] px-4 py-3 text-sm text-[#5e5851] placeholder:text-[#b0a598]"
+                      />
+                    </label>
+                  </div>
+
+                  <label className="block">
+                    <span className="mb-2 block text-[11px] uppercase tracking-[0.18em] text-[#9a9085]">Base URL</span>
+                    <input
+                      value={aiProfileDraft.base_url}
+                      onChange={(event) => setAiProfileDraft({ ...aiProfileDraft, base_url: event.target.value })}
+                      placeholder="https://api.openai.com/v1"
+                      className="w-full rounded-2xl border border-[#d8cfc5] bg-[#fcf8f4] px-4 py-3 text-sm text-[#5e5851] placeholder:text-[#b0a598]"
+                    />
+                  </label>
+
+                  <label className="block">
+                    <span className="mb-2 block text-[11px] uppercase tracking-[0.18em] text-[#9a9085]">API Key</span>
+                    <input
+                      type="password"
+                      value={aiProfileDraft.api_key}
+                      onChange={(event) => setAiProfileDraft({ ...aiProfileDraft, api_key: event.target.value })}
+                      placeholder="sk-..."
+                      className="w-full rounded-2xl border border-[#d8cfc5] bg-[#fcf8f4] px-4 py-3 text-sm text-[#5e5851] placeholder:text-[#b0a598]"
+                    />
+                  </label>
+
+                  <div className="grid gap-4 md:grid-cols-[160px_160px_minmax(0,1fr)]">
+                    <label className="block">
+                      <span className="mb-2 block text-[11px] uppercase tracking-[0.18em] text-[#9a9085]">Temperature</span>
+                      <input
+                        type="number"
+                        min={0}
+                        max={2}
+                        step={0.1}
+                        value={aiProfileDraft.temperature}
+                        onChange={(event) =>
+                          setAiProfileDraft({
+                            ...aiProfileDraft,
+                            temperature: Number(event.target.value || 0)
+                          })
+                        }
+                        className="w-full rounded-2xl border border-[#d8cfc5] bg-[#fcf8f4] px-4 py-3 text-sm text-[#5e5851]"
+                      />
+                    </label>
+                    <label className="block">
+                      <span className="mb-2 block text-[11px] uppercase tracking-[0.18em] text-[#9a9085]">Max Tokens</span>
+                      <input
+                        value={aiProfileDraft.max_tokens}
+                        onChange={(event) => setAiProfileDraft({ ...aiProfileDraft, max_tokens: event.target.value })}
+                        placeholder="留空使用模型默认值"
+                        className="w-full rounded-2xl border border-[#d8cfc5] bg-[#fcf8f4] px-4 py-3 text-sm text-[#5e5851] placeholder:text-[#b0a598]"
+                      />
+                    </label>
+                    <label className="flex items-center gap-3 self-end rounded-2xl border border-[#d8cfc5] bg-[#f3ede6] px-4 py-3 text-sm text-[#6a645c]">
+                      <input
+                        type="checkbox"
+                        checked={aiProfileDraft.is_default}
+                        onChange={(event) =>
+                          setAiProfileDraft({ ...aiProfileDraft, is_default: event.target.checked })
+                        }
+                        className="h-4 w-4"
+                      />
+                      设为默认模型
+                    </label>
+                  </div>
+
+                  <div className="flex flex-wrap justify-end gap-3">
+                    <button
+                      type="button"
+                      onClick={() => void handleTestAiProfile()}
+                      disabled={aiTesting}
+                      className="rounded-2xl border border-[#d8cfc5] bg-[#f8f3ed] px-4 py-3 text-sm text-[#6a645c] hover:bg-[#efe8df] disabled:cursor-not-allowed disabled:opacity-60"
+                    >
+                      {aiTesting ? "测试中..." : "测试连接"}
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => void handleSaveAiProfile()}
+                      className="rounded-2xl bg-[#a8b7ad] px-4 py-3 text-sm font-medium text-[#4e4943] hover:bg-[#97a79d]"
+                    >
+                      保存配置
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => void handleDeleteAiProfile()}
+                      disabled={!aiProfileDraft.id}
+                      className="rounded-2xl border border-[#d5b8aa] bg-[#efe2da] px-4 py-3 text-sm text-[#9b7769] hover:bg-[#e8d9d0] disabled:cursor-not-allowed disabled:opacity-50"
+                    >
+                      删除配置
+                    </button>
+                  </div>
+
+                  <div className="rounded-2xl border border-dashed border-[#d8cfc5] bg-[#fbf7f2] px-4 py-3 text-sm text-[#8f867b]">
+                    {aiTestMessage || "建议先测试连接，再在编辑页里使用 AI 助手。"}
+                  </div>
+                </div>
+              </div>
             </div>
           </>
         ) : null}
@@ -1464,7 +1891,7 @@ export default function App() {
                             <div className="mb-4 flex items-center justify-between gap-4">
                               <div>
                                 <div className="text-[11px] uppercase tracking-[0.24em] text-[#9a9085]">Blocks</div>
-                                <p className="mt-2 text-sm text-[#8b8379]">按住整张卡片拖动，或使用上移 / 下移调整顺序。</p>
+                                <p className="mt-2 text-sm text-[#8b8379]">按住整张卡片拖动即可调整顺序。</p>
                               </div>
                               <button
                                 type="button"
@@ -1497,27 +1924,16 @@ export default function App() {
                                         label: event.target.value
                                       })
                                     }
+                                    onFocus={clearBlockDragState}
+                                    onPointerDownCapture={(event) => {
+                                      clearBlockDragState();
+                                      stopPointerPropagation(event);
+                                    }}
                                     aria-label={`Block ${index + 1} 标签`}
                                     placeholder="点击命名 Block"
-                                    className="min-w-[180px] w-1/2 max-w-[560px] rounded-2xl border border-[#d8cfc5] bg-[#fcf8f4] px-4 py-2.5 text-lg font-semibold tracking-tight text-[#5e5851] placeholder:text-[#b0a598]"
+                                    className="min-w-[180px] w-1/2 max-w-[560px] rounded-2xl border border-[#d8cfc5] bg-[#fcf8f4] px-4 py-2.5 text-lg font-semibold tracking-tight text-[#5e5851] placeholder:text-[#b0a598] select-text"
                                   />
                                     <div className="flex items-center gap-2">
-                                      <button
-                                        type="button"
-                                        onClick={() => moveDraftBlockByOffset(block.id, -1)}
-                                        disabled={index === 0}
-                                        className="rounded-full border border-[#d8cfc5] bg-[#f8f3ed] px-3 py-1.5 text-xs text-[#7f786f] hover:bg-[#ece5dd] disabled:cursor-not-allowed disabled:opacity-40"
-                                      >
-                                        上移
-                                      </button>
-                                      <button
-                                        type="button"
-                                        onClick={() => moveDraftBlockByOffset(block.id, 1)}
-                                        disabled={index === assetDraft.payload.blocks.length - 1}
-                                        className="rounded-full border border-[#d8cfc5] bg-[#f8f3ed] px-3 py-1.5 text-xs text-[#7f786f] hover:bg-[#ece5dd] disabled:cursor-not-allowed disabled:opacity-40"
-                                      >
-                                        下移
-                                      </button>
                                       <button
                                         type="button"
                                         onClick={() => duplicateDraftBlock(block.id)}
@@ -1541,8 +1957,13 @@ export default function App() {
                                     onChange={(event) =>
                                       updateDraftBlock(block.id, { content: event.target.value })
                                     }
+                                    onFocus={clearBlockDragState}
+                                    onPointerDownCapture={(event) => {
+                                      clearBlockDragState();
+                                      stopPointerPropagation(event);
+                                    }}
                                     placeholder="输入这一段提示词内容"
-                                    className="mt-3 w-full rounded-2xl border border-[#d8cfc5] bg-[#fcf8f4] px-4 py-3 text-sm text-[#5e5851] placeholder:text-[#b0a598]"
+                                    className="mt-3 w-full rounded-2xl border border-[#d8cfc5] bg-[#fcf8f4] px-4 py-3 text-sm text-[#5e5851] placeholder:text-[#b0a598] select-text"
                                   />
                                 </article>
                               ))}
@@ -1566,6 +1987,175 @@ export default function App() {
                           </button>
                           <div className="mt-2 text-xs text-[#988f84]">{copyFeedback || "复制到剪贴板"}</div>
                         </article>
+
+                        <article className="rounded-[28px] border border-[#d8cfc5] bg-[#f8f3ed]/90 p-5">
+                          <div className="flex items-start justify-between gap-3">
+                            <div>
+                              <div className="text-[11px] uppercase tracking-[0.24em] text-[#9a9085]">AI</div>
+                              <p className="mt-2 text-sm leading-6 text-[#8b8379]">
+                                统一打开 AI 改写、扩写、压缩和结果应用功能。
+                              </p>
+                            </div>
+                            <button
+                              type="button"
+                              role="switch"
+                              aria-checked={aiPanelOpen}
+                              aria-label={aiPanelOpen ? "收起 AI" : "打开 AI"}
+                              onClick={() => setAiPanelOpen((current) => !current)}
+                              className={[
+                                "relative mt-1 h-10 w-[108px] overflow-hidden rounded-full border transition-all duration-200 focus:outline-none focus:ring-2 focus:ring-[#b8c4bb]/70",
+                                aiPanelOpen
+                                  ? "border-[#b8c4bb] bg-[#a8b7ad] shadow-[inset_0_1px_1px_rgba(120,137,126,0.14)]"
+                                  : "border-[#d8cfc5] bg-[#ddd4cb]"
+                              ].join(" ")}
+                            >
+                              <span
+                                style={{ left: aiPanelOpen ? "calc(100% - 2.25rem)" : "0.25rem" }}
+                                className="absolute top-1/2 h-8 w-8 -translate-y-1/2 rounded-full bg-[#fffdfa] shadow-[0_3px_10px_rgba(111,98,87,0.16)] transition-[left] duration-200"
+                              />
+                            </button>
+                          </div>
+                        </article>
+
+                        {aiPanelOpen ? (
+                          <>
+                            <article className="rounded-[28px] border border-[#d8cfc5] bg-[#f8f3ed]/90 p-5">
+                              <div className="flex items-start justify-between gap-3">
+                                <div>
+                                  <div className="text-[11px] uppercase tracking-[0.24em] text-[#9a9085]">AI Assistant</div>
+                                  <p className="mt-2 text-sm leading-6 text-[#8b8379]">
+                                    先预览结果，再决定替换当前 Block 或追加成新 Block。
+                                  </p>
+                                </div>
+                                <button
+                                  type="button"
+                                  onClick={() => {
+                                    setAiSettingsOpen(true);
+                                    setAiProfileDraft(createAiProfileDraft(activeAiProfile));
+                                    setAiTestMessage("");
+                                  }}
+                                  className="rounded-2xl border border-[#d8cfc5] bg-[#f8f3ed] px-3 py-2 text-sm text-[#6a645c] hover:bg-[#efe8df]"
+                                >
+                                  配置
+                                </button>
+                              </div>
+
+                              <div className="mt-4 grid gap-4">
+                                <label className="block">
+                                  <span className="mb-2 block text-[11px] uppercase tracking-[0.18em] text-[#9a9085]">Model</span>
+                                  <select
+                                    value={activeAiProfile?.id ?? ""}
+                                    onChange={(event) => setSelectedAiProfileId(event.target.value)}
+                                    className="w-full rounded-2xl border border-[#d8cfc5] bg-[#fcf8f4] px-4 py-3 text-sm text-[#5e5851]"
+                                  >
+                                    {aiSettings.profiles.length > 0 ? (
+                                      aiSettings.profiles.map((profile) => (
+                                        <option key={profile.id} value={profile.id}>
+                                          {profile.name} · {profile.model}
+                                        </option>
+                                      ))
+                                    ) : (
+                                      <option value="">请先配置模型</option>
+                                    )}
+                                  </select>
+                                </label>
+
+                                <label className="block">
+                                  <span className="mb-2 block text-[11px] uppercase tracking-[0.18em] text-[#9a9085]">Task</span>
+                                  <select
+                                    value={aiTaskType}
+                                    onChange={(event) => setAiTaskType(event.target.value as AiTaskType)}
+                                    className="w-full rounded-2xl border border-[#d8cfc5] bg-[#fcf8f4] px-4 py-3 text-sm text-[#5e5851]"
+                                  >
+                                    <option value="generate_from_asset">生成完整提示词</option>
+                                    <option value="rewrite_block">改写当前 Block</option>
+                                    <option value="expand_block">扩写当前 Block</option>
+                                    <option value="compress_block">压缩当前 Block</option>
+                                  </select>
+                                </label>
+
+                                {aiTaskType !== "generate_from_asset" ? (
+                                  <label className="block">
+                                    <span className="mb-2 block text-[11px] uppercase tracking-[0.18em] text-[#9a9085]">Target Block</span>
+                                    <select
+                                      value={aiTargetBlockId ?? ""}
+                                      onChange={(event) => setAiTargetBlockId(event.target.value)}
+                                      className="w-full rounded-2xl border border-[#d8cfc5] bg-[#fcf8f4] px-4 py-3 text-sm text-[#5e5851]"
+                                    >
+                                      {assetDraft.payload.blocks.map((block, index) => (
+                                        <option key={block.id} value={block.id}>
+                                          {index + 1}. {(block.label ?? "").trim() || "未命名 Block"}
+                                        </option>
+                                      ))}
+                                    </select>
+                                  </label>
+                                ) : null}
+
+                                <label className="block">
+                                  <span className="mb-2 block text-[11px] uppercase tracking-[0.18em] text-[#9a9085]">Instruction</span>
+                                  <textarea
+                                    rows={4}
+                                    value={aiInstruction}
+                                    onChange={(event) => setAiInstruction(event.target.value)}
+                                    placeholder="例如：更电影感、更适合 Midjourney、保持中文、增强光影层次"
+                                    className="w-full rounded-3xl border border-[#d8cfc5] bg-[#fcf8f4] px-4 py-4 text-sm text-[#5e5851] placeholder:text-[#b0a598]"
+                                  />
+                                </label>
+
+                                <button
+                                  type="button"
+                                  onClick={() => void handleRunAi()}
+                                  disabled={aiRunning || !activeAiProfile}
+                                  className="rounded-2xl bg-[#a8b7ad] px-4 py-3 text-sm font-medium text-[#4e4943] hover:bg-[#97a79d] disabled:cursor-not-allowed disabled:opacity-50"
+                                >
+                                  {aiRunning ? "AI 生成中..." : "运行 AI"}
+                                </button>
+
+                                <div className="rounded-2xl border border-[#d8cfc5] bg-[#fbf7f2] px-4 py-3 text-sm text-[#8f867b]">
+                                  {aiRunMessage || (activeAiProfile ? "选择动作后即可调用当前模型。" : "请先在 AI 配置里添加模型。")}
+                                </div>
+                              </div>
+                            </article>
+
+                            <article className="rounded-[28px] border border-[#d8cfc5] bg-[#efe8e1] p-5">
+                              <div className="text-[11px] uppercase tracking-[0.24em] text-[#9a9085]">AI Result</div>
+                              <pre className="mt-4 max-h-[280px] overflow-y-auto whitespace-pre-wrap break-words text-sm leading-7 text-[#655f58]">
+                                {aiResult?.text || "AI 返回的结果会显示在这里。"}
+                              </pre>
+                              <div className="mt-4 grid gap-3">
+                                <button
+                                  type="button"
+                                  onClick={handleApplyAiToTargetBlock}
+                                  disabled={!aiResult?.text || (aiTaskType !== "generate_from_asset" && !aiTargetBlockId)}
+                                  className="rounded-2xl bg-[#e2ddd5] px-4 py-3 text-sm font-medium text-[#5a544d] hover:bg-[#d6cec5] disabled:cursor-not-allowed disabled:opacity-50"
+                                >
+                                  应用到当前 Block
+                                </button>
+                                <button
+                                  type="button"
+                                  onClick={handleAppendAiAsBlock}
+                                  disabled={!aiResult?.text}
+                                  className="rounded-2xl border border-[#d8cfc5] bg-[#f8f3ed] px-4 py-3 text-sm text-[#6a645c] hover:bg-[#efe8df] disabled:cursor-not-allowed disabled:opacity-50"
+                                >
+                                  追加为新 Block
+                                </button>
+                                <button
+                                  type="button"
+                                  onClick={() => void handleCopyAiResult()}
+                                  disabled={!aiResult?.text}
+                                  className="rounded-2xl border border-[#d8cfc5] bg-[#f8f3ed] px-4 py-3 text-sm text-[#6a645c] hover:bg-[#efe8df] disabled:cursor-not-allowed disabled:opacity-50"
+                                >
+                                  复制 AI 结果
+                                </button>
+                              </div>
+                              {aiResult?.usage ? (
+                                <div className="mt-3 text-xs text-[#988f84]">
+                                  Tokens：{aiResult.usage.total_tokens ?? "--"} / 模型：{aiResult.raw_model ?? "--"}
+                                </div>
+                              ) : null}
+                            </article>
+                          </>
+                        ) : null}
 
                         <article className="rounded-[28px] border border-[#d8cfc5] bg-[#f8f3ed]/90 p-5">
                           <div className="text-[11px] uppercase tracking-[0.24em] text-[#9a9085]">Actions</div>
