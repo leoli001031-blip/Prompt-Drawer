@@ -7,12 +7,16 @@ export function useWorkbenchUiState() {
   const [activeAssetId, setActiveAssetId] = useState<string | null>(null);
   const [drawerOpen, setDrawerOpen] = useState(false);
   const [importPanelOpen, setImportPanelOpen] = useState(false);
+  const [createLibraryModalOpen, setCreateLibraryModalOpen] = useState(false);
+  const [createLibraryName, setCreateLibraryName] = useState("");
+  const [createLibraryTemplateId, setCreateLibraryTemplateId] = useState("");
   const [importRaw, setImportRaw] = useState("");
   const [importTitle, setImportTitle] = useState("");
   const [editingFolderId, setEditingFolderId] = useState<string | null>(null);
   const [editingFolderName, setEditingFolderName] = useState("");
   const [folderContextMenu, setFolderContextMenu] = useState<FolderContextMenuState | null>(null);
   const [assetContextMenu, setAssetContextMenu] = useState<AssetContextMenuState | null>(null);
+  const [trashViewOpen, setTrashViewOpen] = useState(false);
 
   function openAsset(assetId: string): void {
     setAssetContextMenu(null);
@@ -37,6 +41,20 @@ export function useWorkbenchUiState() {
   function resetImportDraft(): void {
     setImportRaw("");
     setImportTitle("");
+  }
+
+  function openCreateLibraryModal(): void {
+    resetCreateLibraryDraft();
+    setCreateLibraryModalOpen(true);
+  }
+
+  function closeCreateLibraryModal(): void {
+    setCreateLibraryModalOpen(false);
+  }
+
+  function resetCreateLibraryDraft(): void {
+    setCreateLibraryName("");
+    setCreateLibraryTemplateId("");
   }
 
   function beginFolderRename(folder: FolderRecord): void {
@@ -97,11 +115,26 @@ export function useWorkbenchUiState() {
     setAssetContextMenu(null);
   }
 
+  function toggleTrashView(): void {
+    setAssetContextMenu(null);
+    setFolderContextMenu(null);
+    setTrashViewOpen((current) => !current);
+  }
+
+  function closeTrashView(): void {
+    setTrashViewOpen(false);
+  }
+
   return {
     activeAssetId,
     setActiveAssetId,
     drawerOpen,
     setDrawerOpen,
+    createLibraryModalOpen,
+    createLibraryName,
+    setCreateLibraryName,
+    createLibraryTemplateId,
+    setCreateLibraryTemplateId,
     importPanelOpen,
     importRaw,
     importTitle,
@@ -110,8 +143,12 @@ export function useWorkbenchUiState() {
     setEditingFolderName,
     folderContextMenu,
     assetContextMenu,
+    trashViewOpen,
     openAsset,
     closeDrawer,
+    openCreateLibraryModal,
+    closeCreateLibraryModal,
+    resetCreateLibraryDraft,
     openImportPanel,
     closeImportPanel,
     resetImportDraft,
@@ -124,6 +161,8 @@ export function useWorkbenchUiState() {
     closeFolderContextMenu,
     confirmFolderDelete,
     openAssetContextMenu,
-    closeAssetContextMenu
+    closeAssetContextMenu,
+    toggleTrashView,
+    closeTrashView
   };
 }

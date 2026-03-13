@@ -12,6 +12,7 @@ export interface RightPanelProps {
   exportPreview: string;
   copyFeedback: string;
   onCopyExport: () => void;
+  isTrashViewOpen: boolean;
   aiPanelOpen: boolean;
   onToggleAiPanel: () => void;
   onOpenAiSettings: () => void;
@@ -34,13 +35,19 @@ export interface RightPanelProps {
   onAppendAiAsBlock: () => void;
   onCopyAiResult: () => void;
   isManualSaving: boolean;
+  canUndo: boolean;
+  canRedo: boolean;
+  onUndoDraft: () => void;
+  onRedoDraft: () => void;
   onSaveAsset: () => void;
   onDuplicateCurrentAsset: () => void;
   copyTargetFolderId: string | null;
   onChangeCopyTargetFolderId: (value: string) => void;
   folders: FolderRecord[];
-  confirmAssetDelete: boolean;
-  onDeleteAsset: () => void;
+  confirmPermanentDelete: boolean;
+  onMoveAssetToTrash: () => void;
+  onRestoreAsset: () => void;
+  onPermanentlyDeleteAsset: () => void;
   versionName: string;
   onChangeVersionName: (value: string) => void;
   onCreateVersion: () => void;
@@ -52,6 +59,7 @@ export function RightPanel({
   exportPreview,
   copyFeedback,
   onCopyExport,
+  isTrashViewOpen,
   aiPanelOpen,
   onToggleAiPanel,
   onOpenAiSettings,
@@ -74,13 +82,19 @@ export function RightPanel({
   onAppendAiAsBlock,
   onCopyAiResult,
   isManualSaving,
+  canUndo,
+  canRedo,
+  onUndoDraft,
+  onRedoDraft,
   onSaveAsset,
   onDuplicateCurrentAsset,
   copyTargetFolderId,
   onChangeCopyTargetFolderId,
   folders,
-  confirmAssetDelete,
-  onDeleteAsset,
+  confirmPermanentDelete,
+  onMoveAssetToTrash,
+  onRestoreAsset,
+  onPermanentlyDeleteAsset,
   versionName,
   onChangeVersionName,
   onCreateVersion,
@@ -129,14 +143,21 @@ export function RightPanel({
       ) : null}
 
       <ActionsCard
+        isTrashViewOpen={isTrashViewOpen}
         isManualSaving={isManualSaving}
+        canUndo={canUndo}
+        canRedo={canRedo}
+        onUndoDraft={onUndoDraft}
+        onRedoDraft={onRedoDraft}
         onSaveAsset={onSaveAsset}
         onDuplicateCurrentAsset={onDuplicateCurrentAsset}
         copyTargetFolderId={copyTargetFolderId}
         onChangeCopyTargetFolderId={onChangeCopyTargetFolderId}
         folders={folders}
-        confirmAssetDelete={confirmAssetDelete}
-        onDeleteAsset={onDeleteAsset}
+        confirmPermanentDelete={confirmPermanentDelete}
+        onMoveAssetToTrash={onMoveAssetToTrash}
+        onRestoreAsset={onRestoreAsset}
+        onPermanentlyDeleteAsset={onPermanentlyDeleteAsset}
       />
 
       <VersionHistoryCard

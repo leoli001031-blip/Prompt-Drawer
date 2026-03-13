@@ -1,10 +1,13 @@
 import { useEffect, type Dispatch, type PointerEvent as ReactPointerEvent, type SetStateAction } from "react";
 import {
   createBlock as createPromptBlock,
+  createBlockFromTemplate,
   duplicateBlock as duplicatePromptBlock,
+  toggleProjectLock,
   reorderBlocks
 } from "../lib/payload";
 import type { PromptBlock } from "../types/prompt";
+import type { BlockTemplate } from "../types/settings";
 import type { PromptAsset } from "../types/storage";
 
 function isBlockControlTarget(target: EventTarget | null): boolean {
@@ -81,7 +84,7 @@ export function useBlockEditor({
     });
   }
 
-  function addBlock(): void {
+  function addBlock(template?: BlockTemplate | null): void {
     if (!assetDraft) {
       return;
     }
@@ -90,7 +93,10 @@ export function useBlockEditor({
       ...assetDraft,
       payload: {
         ...assetDraft.payload,
-        blocks: [...assetDraft.payload.blocks, createPromptBlock("custom")]
+        blocks: [
+          ...assetDraft.payload.blocks,
+          template ? createBlockFromTemplate(template) : createPromptBlock("custom")
+        ]
       }
     });
   }
@@ -112,6 +118,22 @@ export function useBlockEditor({
       payload: {
         ...assetDraft.payload,
         blocks: nextBlocks
+      }
+    });
+  }
+
+  function toggleBlockLock(blockId: string): void {
+    if (!assetDraft) {
+      return;
+    }
+
+    setAssetDraft({
+      ...assetDraft,
+      payload: {
+        ...assetDraft.payload,
+        blocks: assetDraft.payload.blocks.map((block) =>
+          block.id === blockId ? toggleProjectLock(block) : block
+        )
       }
     });
   }
@@ -171,6 +193,7 @@ export function useBlockEditor({
     removeBlock,
     addBlock,
     duplicateBlock,
+    toggleBlockLock,
     beginBlockDrag,
     updateBlockDragTarget,
     clearBlockDragState

@@ -2,6 +2,7 @@ import type { Dispatch, PointerEvent as ReactPointerEvent, SetStateAction } from
 import type { FolderRecord, FolderType, PromptAsset } from "../../types/storage";
 import type { AiProviderProfile, AiTaskResult, AiTaskType } from "../../types/ai";
 import type { PromptVersionSnapshot } from "../../types/prompt";
+import type { BlockTemplate } from "../../types/settings";
 import { splitTags } from "../../utils/asset";
 import { AssetHeader } from "./AssetHeader";
 import { BlockList } from "./BlockList";
@@ -17,16 +18,19 @@ export interface AssetEditorPaneProps {
   onBack: () => void;
   draggingBlockId: string | null;
   dragOverBlockId: string | null;
-  onAddBlock: () => void;
+  blockTemplates: BlockTemplate[];
+  onAddBlock: (template?: BlockTemplate | null) => void;
   onBlockPointerDown: (event: ReactPointerEvent<HTMLElement>, blockId: string) => void;
   onBlockPointerEnter: (event: ReactPointerEvent<HTMLElement>, blockId: string) => void;
   onUpdateBlock: (blockId: string, patch: Partial<{ label: string; content: string }>) => void;
+  onToggleBlockLock: (blockId: string) => void;
   onDuplicateBlock: (blockId: string) => void;
   onRemoveBlock: (blockId: string) => void;
   onClearDragState: () => void;
   exportPreview: string;
   copyFeedback: string;
   onCopyExport: () => void;
+  isTrashViewOpen: boolean;
   aiPanelOpen: boolean;
   onToggleAiPanel: () => void;
   onOpenAiSettings: () => void;
@@ -48,13 +52,19 @@ export interface AssetEditorPaneProps {
   onAppendAiAsBlock: () => void;
   onCopyAiResult: () => void;
   isManualSaving: boolean;
+  canUndo: boolean;
+  canRedo: boolean;
+  onUndoDraft: () => void;
+  onRedoDraft: () => void;
   onSaveAsset: () => void;
   onDuplicateCurrentAsset: () => void;
   copyTargetFolderId: string | null;
   onChangeCopyTargetFolderId: (value: string) => void;
   folders: FolderRecord[];
-  confirmAssetDelete: boolean;
-  onDeleteAsset: () => void;
+  confirmPermanentDelete: boolean;
+  onMoveAssetToTrash: () => void;
+  onRestoreAsset: () => void;
+  onPermanentlyDeleteAsset: () => void;
   versionName: string;
   onChangeVersionName: (value: string) => void;
   onCreateVersion: () => void;
@@ -72,16 +82,19 @@ export function AssetEditorPane({
   onBack,
   draggingBlockId,
   dragOverBlockId,
+  blockTemplates,
   onAddBlock,
   onBlockPointerDown,
   onBlockPointerEnter,
   onUpdateBlock,
+  onToggleBlockLock,
   onDuplicateBlock,
   onRemoveBlock,
   onClearDragState,
   exportPreview,
   copyFeedback,
   onCopyExport,
+  isTrashViewOpen,
   aiPanelOpen,
   onToggleAiPanel,
   onOpenAiSettings,
@@ -103,13 +116,19 @@ export function AssetEditorPane({
   onAppendAiAsBlock,
   onCopyAiResult,
   isManualSaving,
+  canUndo,
+  canRedo,
+  onUndoDraft,
+  onRedoDraft,
   onSaveAsset,
   onDuplicateCurrentAsset,
   copyTargetFolderId,
   onChangeCopyTargetFolderId,
   folders,
-  confirmAssetDelete,
-  onDeleteAsset,
+  confirmPermanentDelete,
+  onMoveAssetToTrash,
+  onRestoreAsset,
+  onPermanentlyDeleteAsset,
   versionName,
   onChangeVersionName,
   onCreateVersion,
@@ -189,6 +208,8 @@ export function AssetEditorPane({
 
               <BlockList
                 blocks={assetDraft.payload.blocks}
+                blockTemplates={blockTemplates}
+                selectedFolderType={selectedFolderType}
                 draggingBlockId={draggingBlockId}
                 dragOverBlockId={dragOverBlockId}
                 onAddBlock={onAddBlock}
@@ -196,6 +217,7 @@ export function AssetEditorPane({
                 onBlockPointerEnter={onBlockPointerEnter}
                 onLabelChange={(blockId, value) => onUpdateBlock(blockId, { label: value })}
                 onContentChange={(blockId, value) => onUpdateBlock(blockId, { content: value })}
+                onToggleLock={onToggleBlockLock}
                 onDuplicate={onDuplicateBlock}
                 onRemove={onRemoveBlock}
                 onClearDragState={onClearDragState}
@@ -207,6 +229,7 @@ export function AssetEditorPane({
             exportPreview={exportPreview}
             copyFeedback={copyFeedback}
             onCopyExport={onCopyExport}
+            isTrashViewOpen={isTrashViewOpen}
             aiPanelOpen={aiPanelOpen}
             onToggleAiPanel={onToggleAiPanel}
             onOpenAiSettings={onOpenAiSettings}
@@ -229,13 +252,19 @@ export function AssetEditorPane({
             onAppendAiAsBlock={onAppendAiAsBlock}
             onCopyAiResult={onCopyAiResult}
             isManualSaving={isManualSaving}
+            canUndo={canUndo}
+            canRedo={canRedo}
+            onUndoDraft={onUndoDraft}
+            onRedoDraft={onRedoDraft}
             onSaveAsset={onSaveAsset}
             onDuplicateCurrentAsset={onDuplicateCurrentAsset}
             copyTargetFolderId={copyTargetFolderId}
             onChangeCopyTargetFolderId={onChangeCopyTargetFolderId}
             folders={folders}
-            confirmAssetDelete={confirmAssetDelete}
-            onDeleteAsset={onDeleteAsset}
+            confirmPermanentDelete={confirmPermanentDelete}
+            onMoveAssetToTrash={onMoveAssetToTrash}
+            onRestoreAsset={onRestoreAsset}
+            onPermanentlyDeleteAsset={onPermanentlyDeleteAsset}
             versionName={versionName}
             onChangeVersionName={onChangeVersionName}
             onCreateVersion={onCreateVersion}

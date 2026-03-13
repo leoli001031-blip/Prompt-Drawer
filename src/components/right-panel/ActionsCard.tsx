@@ -1,30 +1,62 @@
 import type { FolderRecord } from "../../types/storage";
 
 export interface ActionsCardProps {
+  isTrashViewOpen: boolean;
   isManualSaving: boolean;
+  canUndo: boolean;
+  canRedo: boolean;
+  onUndoDraft: () => void;
+  onRedoDraft: () => void;
   onSaveAsset: () => void;
   onDuplicateCurrentAsset: () => void;
   copyTargetFolderId: string | null;
   onChangeCopyTargetFolderId: (value: string) => void;
   folders: FolderRecord[];
-  confirmAssetDelete: boolean;
-  onDeleteAsset: () => void;
+  confirmPermanentDelete: boolean;
+  onMoveAssetToTrash: () => void;
+  onRestoreAsset: () => void;
+  onPermanentlyDeleteAsset: () => void;
 }
 
 export function ActionsCard({
+  isTrashViewOpen,
   isManualSaving,
+  canUndo,
+  canRedo,
+  onUndoDraft,
+  onRedoDraft,
   onSaveAsset,
   onDuplicateCurrentAsset,
   copyTargetFolderId,
   onChangeCopyTargetFolderId,
   folders,
-  confirmAssetDelete,
-  onDeleteAsset
+  confirmPermanentDelete,
+  onMoveAssetToTrash,
+  onRestoreAsset,
+  onPermanentlyDeleteAsset
 }: ActionsCardProps) {
   return (
     <article className="rounded-[28px] border border-[#d8cfc5] bg-[#f8f3ed]/90 p-5">
       <div className="text-[11px] uppercase tracking-[0.24em] text-[#9a9085]">Actions</div>
       <div className="mt-4 grid gap-3">
+        <div className="grid grid-cols-2 gap-3">
+          <button
+            type="button"
+            onClick={onUndoDraft}
+            disabled={!canUndo}
+            className="rounded-2xl border border-[#d8cfc5] bg-[#f8f3ed] px-4 py-3 text-sm text-[#6a645c] hover:bg-[#efe8df] disabled:cursor-not-allowed disabled:opacity-50"
+          >
+            撤销
+          </button>
+          <button
+            type="button"
+            onClick={onRedoDraft}
+            disabled={!canRedo}
+            className="rounded-2xl border border-[#d8cfc5] bg-[#f8f3ed] px-4 py-3 text-sm text-[#6a645c] hover:bg-[#efe8df] disabled:cursor-not-allowed disabled:opacity-50"
+          >
+            重做
+          </button>
+        </div>
         <button
           type="button"
           onClick={onSaveAsset}
@@ -43,11 +75,20 @@ export function ActionsCard({
         </button>
         <button
           type="button"
-          onClick={onDeleteAsset}
-          className="rounded-2xl border border-[#d5b8aa] bg-[#efe2da] px-4 py-3 text-sm text-[#9b7769] hover:bg-[#e8d9d0]"
+          onClick={isTrashViewOpen ? onRestoreAsset : onMoveAssetToTrash}
+          className="rounded-2xl border border-[#bfd0c7] bg-[#e6eeea] px-4 py-3 text-sm text-[#74877d] hover:bg-[#dce7e1]"
         >
-          {confirmAssetDelete ? "确认删除" : "删除资产"}
+          {isTrashViewOpen ? "恢复资产" : "移入垃圾桶"}
         </button>
+        {isTrashViewOpen ? (
+          <button
+            type="button"
+            onClick={onPermanentlyDeleteAsset}
+            className="rounded-2xl border border-[#d5b8aa] bg-[#efe2da] px-4 py-3 text-sm text-[#9b7769] hover:bg-[#e8d9d0]"
+          >
+            {confirmPermanentDelete ? "确认永久删除" : "永久删除"}
+          </button>
+        ) : null}
       </div>
       <label className="mt-3 block">
         <span className="mb-2 block text-[11px] uppercase tracking-[0.18em] text-[#9a9085]">复制到目录</span>
@@ -63,7 +104,9 @@ export function ActionsCard({
           ))}
         </select>
       </label>
-      <div className="mt-3 text-xs text-[#988f84]">自动保存已开启，编辑停止约 0.9 秒后会自动落库。</div>
+      <div className="mt-3 text-xs text-[#988f84]">
+        {isTrashViewOpen ? "垃圾桶中的资产可恢复，也可以永久删除。" : "自动保存已开启，编辑停止约 0.9 秒后会自动落库。"}
+      </div>
     </article>
   );
 }

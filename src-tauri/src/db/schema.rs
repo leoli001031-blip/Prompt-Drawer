@@ -15,6 +15,7 @@ CREATE TABLE IF NOT EXISTS prompt_assets (
     payload TEXT NOT NULL,
     is_favorite INTEGER NOT NULL DEFAULT 0 CHECK (is_favorite IN (0, 1)),
     updated_at INTEGER NOT NULL,
+    deleted_at INTEGER DEFAULT NULL,
     FOREIGN KEY (folder_id) REFERENCES folders(id) ON DELETE CASCADE
 );
 "#;

@@ -30,7 +30,7 @@ pub fn query_prompt_assets(
     if let Some(value) = folder_id {
         let mut statement = connection
             .prepare(
-                "SELECT id, folder_id, title, payload, is_favorite, updated_at
+                "SELECT id, folder_id, title, payload, is_favorite, updated_at, deleted_at
                  FROM prompt_assets
                  WHERE folder_id = ?1
                  ORDER BY updated_at DESC",
@@ -46,6 +46,7 @@ pub fn query_prompt_assets(
                     payload: row.get(3)?,
                     is_favorite: row.get(4)?,
                     updated_at: row.get(5)?,
+                    deleted_at: row.get(6)?,
                 })
             })
             .map_err(|error| error.to_string())?;
@@ -55,7 +56,7 @@ pub fn query_prompt_assets(
     } else {
         let mut statement = connection
             .prepare(
-                "SELECT id, folder_id, title, payload, is_favorite, updated_at
+                "SELECT id, folder_id, title, payload, is_favorite, updated_at, deleted_at
                  FROM prompt_assets
                  ORDER BY updated_at DESC",
             )
@@ -70,6 +71,7 @@ pub fn query_prompt_assets(
                     payload: row.get(3)?,
                     is_favorite: row.get(4)?,
                     updated_at: row.get(5)?,
+                    deleted_at: row.get(6)?,
                 })
             })
             .map_err(|error| error.to_string())?;

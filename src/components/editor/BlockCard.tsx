@@ -6,10 +6,13 @@ export interface BlockCardProps {
   index: number;
   isDragging: boolean;
   isDragOver: boolean;
+  showProjectLock: boolean;
+  lockLabel: string;
   onBlockPointerDown: (event: ReactPointerEvent<HTMLElement>, blockId: string) => void;
   onBlockPointerEnter: (event: ReactPointerEvent<HTMLElement>, blockId: string) => void;
   onLabelChange: (blockId: string, value: string) => void;
   onContentChange: (blockId: string, value: string) => void;
+  onToggleLock: (blockId: string) => void;
   onDuplicate: (blockId: string) => void;
   onRemove: (blockId: string) => void;
   onClearDragState: () => void;
@@ -20,10 +23,13 @@ export function BlockCard({
   index,
   isDragging,
   isDragOver,
+  showProjectLock,
+  lockLabel,
   onBlockPointerDown,
   onBlockPointerEnter,
   onLabelChange,
   onContentChange,
+  onToggleLock,
   onDuplicate,
   onRemove,
   onClearDragState
@@ -54,6 +60,20 @@ export function BlockCard({
           className="min-w-[180px] w-1/2 max-w-[560px] rounded-2xl border border-[#d8cfc5] bg-[#fcf8f4] px-4 py-2.5 text-lg font-semibold tracking-tight text-[#5e5851] placeholder:text-[#b0a598] select-text"
         />
         <div className="flex items-center gap-2">
+          {showProjectLock ? (
+            <button
+              type="button"
+              onClick={() => onToggleLock(block.id)}
+              className={[
+                "rounded-full border px-3 py-1.5 text-xs transition",
+                block.is_locked
+                  ? "border-[#bfd0c7] bg-[#e6eeea] text-[#74877d] hover:bg-[#dce7e1]"
+                  : "border-[#d8cfc5] bg-[#f8f3ed] text-[#7f786f] hover:bg-[#ece5dd]"
+              ].join(" ")}
+            >
+              {block.is_locked ? "已锁定" : lockLabel}
+            </button>
+          ) : null}
           <button
             type="button"
             onClick={() => onDuplicate(block.id)}
@@ -64,6 +84,7 @@ export function BlockCard({
           <button
             type="button"
             onClick={() => onRemove(block.id)}
+            disabled={Boolean(block.is_locked)}
             className="rounded-full border border-[#d5b8aa] bg-[#efe2da] px-3 py-1.5 text-xs text-[#9b7769] hover:bg-[#e8d9d0]"
           >
             删除

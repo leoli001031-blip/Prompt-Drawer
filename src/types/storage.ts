@@ -16,6 +16,7 @@ export interface PromptAssetRow {
   payload: string;
   is_favorite: number;
   updated_at: number;
+  deleted_at?: number | null;
 }
 
 export interface PromptAsset {
@@ -25,6 +26,7 @@ export interface PromptAsset {
   payload: PromptPayload;
   is_favorite: boolean;
   updated_at: number;
+  deleted_at?: number | null;
 }
 
 export interface WorkbenchSnapshot {

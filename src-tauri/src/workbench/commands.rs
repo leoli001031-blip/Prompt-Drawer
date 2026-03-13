@@ -161,6 +161,46 @@ pub fn workbench_delete_prompt_asset(
     app: AppHandle,
     asset_id: String,
 ) -> CommandResult<WorkbenchSnapshot> {
+    workbench_hard_delete_prompt_asset(app, asset_id)
+}
+
+#[tauri::command]
+pub fn workbench_soft_delete_prompt_asset(
+    app: AppHandle,
+    asset_id: String,
+) -> CommandResult<WorkbenchSnapshot> {
+    let connection = open_database(&app)?;
+    initialize_database(&connection)?;
+    connection
+        .execute(
+            "UPDATE prompt_assets SET deleted_at = ?1, updated_at = ?2 WHERE id = ?3",
+            params![now_ts(), now_ts(), asset_id],
+        )
+        .map_err(|error| error.to_string())?;
+    build_snapshot(&connection)
+}
+
+#[tauri::command]
+pub fn workbench_restore_prompt_asset(
+    app: AppHandle,
+    asset_id: String,
+) -> CommandResult<WorkbenchSnapshot> {
+    let connection = open_database(&app)?;
+    initialize_database(&connection)?;
+    connection
+        .execute(
+            "UPDATE prompt_assets SET deleted_at = NULL, updated_at = ?1 WHERE id = ?2",
+            params![now_ts(), asset_id],
+        )
+        .map_err(|error| error.to_string())?;
+    build_snapshot(&connection)
+}
+
+#[tauri::command]
+pub fn workbench_hard_delete_prompt_asset(
+    app: AppHandle,
+    asset_id: String,
+) -> CommandResult<WorkbenchSnapshot> {
     let connection = open_database(&app)?;
     initialize_database(&connection)?;
     connection

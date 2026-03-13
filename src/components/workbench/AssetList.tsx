@@ -6,6 +6,7 @@ export interface AssetListProps {
   visibleAssets: PromptAsset[];
   folderAssets: PromptAsset[];
   selectedFolderType: FolderType | null | undefined;
+  isTrashViewOpen: boolean;
   onOpenAsset: (assetId: string) => void;
   onOpenAssetContextMenu: (event: MouseEvent, asset: PromptAsset) => void;
   onToggleFavorite: (asset: PromptAsset) => void;
@@ -15,6 +16,7 @@ export function AssetList({
   visibleAssets,
   folderAssets,
   selectedFolderType,
+  isTrashViewOpen,
   onOpenAsset,
   onOpenAssetContextMenu,
   onToggleFavorite
@@ -27,6 +29,7 @@ export function AssetList({
             key={asset.id}
             asset={asset}
             selectedFolderType={selectedFolderType}
+            isTrashViewOpen={isTrashViewOpen}
             onOpenAsset={onOpenAsset}
             onOpenAssetContextMenu={onOpenAssetContextMenu}
             onToggleFavorite={onToggleFavorite}
@@ -35,9 +38,13 @@ export function AssetList({
 
         {visibleAssets.length === 0 ? (
           <div className="flex min-h-[180px] items-center justify-center rounded-[28px] border border-dashed border-[#d8cfc5] bg-[#f7f1ea] px-8 text-center text-sm leading-7 text-[#988f84]">
-            {folderAssets.length === 0
-              ? "当前目录下还没有 Prompt Asset，先在上方创建一条。"
-              : "当前筛选条件下没有匹配资产，试试清空关键词或关闭收藏过滤。"}
+            {isTrashViewOpen
+              ? folderAssets.length === 0
+                ? "当前目录的垃圾桶还是空的。"
+                : "当前筛选条件下没有匹配的已删除资产。"
+              : folderAssets.length === 0
+                ? "当前目录下还没有 Prompt Asset，先在上方创建一条。"
+                : "当前筛选条件下没有匹配资产，试试清空关键词或关闭收藏过滤。"}
           </div>
         ) : null}
       </div>

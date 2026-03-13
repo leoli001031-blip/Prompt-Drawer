@@ -6,6 +6,9 @@ export interface PromptBlock {
   label?: string;
   content: string;
   isActive: boolean;
+  template_id?: string;
+  is_locked?: boolean;
+  project_lock_id?: string;
 }
 
 export interface StoryboardMeta {

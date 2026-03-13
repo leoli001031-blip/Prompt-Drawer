@@ -8,16 +8,22 @@ export interface AssetContextMenuState {
 
 export interface AssetContextMenuProps {
   menu: AssetContextMenuState | null;
+  isTrashViewOpen: boolean;
   onClose: () => void;
   onDuplicateAsset: (asset: PromptAsset) => void;
-  onDeleteAsset: (asset: PromptAsset) => void;
+  onMoveAssetToTrash: (asset: PromptAsset) => void;
+  onRestoreAsset: (asset: PromptAsset) => void;
+  onPermanentlyDeleteAsset: (asset: PromptAsset) => void;
 }
 
 export function AssetContextMenu({
   menu,
+  isTrashViewOpen,
   onClose,
   onDuplicateAsset,
-  onDeleteAsset
+  onMoveAssetToTrash,
+  onRestoreAsset,
+  onPermanentlyDeleteAsset
 }: AssetContextMenuProps) {
   if (!menu) {
     return null;
@@ -40,17 +46,37 @@ export function AssetContextMenu({
         <button
           type="button"
           onClick={() => onDuplicateAsset(menu.asset)}
-          className="w-full rounded-xl px-3 py-2 text-left text-sm text-[#5f584f] hover:bg-[#f2ebe3]"
+          disabled={isTrashViewOpen}
+          className="w-full rounded-xl px-3 py-2 text-left text-sm text-[#5f584f] hover:bg-[#f2ebe3] disabled:cursor-not-allowed disabled:opacity-50"
         >
           复制资产
         </button>
-        <button
-          type="button"
-          onClick={() => onDeleteAsset(menu.asset)}
-          className="mt-1 w-full rounded-xl px-3 py-2 text-left text-sm text-[#9b7769] hover:bg-[#efe2da]"
-        >
-          直接删除
-        </button>
+        {isTrashViewOpen ? (
+          <>
+            <button
+              type="button"
+              onClick={() => onRestoreAsset(menu.asset)}
+              className="mt-1 w-full rounded-xl px-3 py-2 text-left text-sm text-[#74877d] hover:bg-[#e6eeea]"
+            >
+              恢复资产
+            </button>
+            <button
+              type="button"
+              onClick={() => onPermanentlyDeleteAsset(menu.asset)}
+              className="mt-1 w-full rounded-xl px-3 py-2 text-left text-sm text-[#9b7769] hover:bg-[#efe2da]"
+            >
+              永久删除
+            </button>
+          </>
+        ) : (
+          <button
+            type="button"
+            onClick={() => onMoveAssetToTrash(menu.asset)}
+            className="mt-1 w-full rounded-xl px-3 py-2 text-left text-sm text-[#9b7769] hover:bg-[#efe2da]"
+          >
+            移入垃圾桶
+          </button>
+        )}
       </div>
     </>
   );

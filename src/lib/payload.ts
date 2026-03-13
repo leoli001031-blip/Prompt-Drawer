@@ -6,6 +6,7 @@ import type {
   StoryboardMeta
 } from "../types/prompt";
 import type { FolderType, PromptAsset, PromptAssetRow } from "../types/storage";
+import type { AssetTemplate, BlockTemplate } from "../types/settings";
 
 const BLOCK_TYPE_LABELS: Record<PromptBlockType, string> = {
   character: "角色",
@@ -97,7 +98,10 @@ export function parsePromptPayload(raw: string): PromptPayload {
         type: block.type ?? "custom",
         label: typeof block.label === "string" ? block.label : "",
         content: typeof block.content === "string" ? block.content : "",
-        isActive: block.isActive ?? true
+        isActive: block.isActive ?? true,
+        template_id: typeof block.template_id === "string" ? block.template_id : undefined,
+        is_locked: Boolean(block.is_locked),
+        project_lock_id: typeof block.project_lock_id === "string" ? block.project_lock_id : undefined
       })),
       tags: Array.isArray(parsed.tags) ? parsed.tags.filter((tag): tag is string => typeof tag === "string") : [],
       remark: typeof parsed.remark === "string" ? parsed.remark : undefined,
@@ -136,6 +140,130 @@ export function createBlock(type: PromptBlockType = "custom"): PromptBlock {
   };
 }
 
+export function createBlockFromTemplate(template: BlockTemplate): PromptBlock {
+  return {
+    id: makeId("block"),
+    type: template.type,
+    label: template.label,
+    content: template.content,
+    isActive: true,
+    template_id: template.id
+  };
+}
+
+export function createBlocksFromAssetTemplate(template: AssetTemplate): PromptBlock[] {
+  return template.blocks.map((block) => ({
+    id: makeId("block"),
+    type: block.type,
+    label: block.label,
+    content: block.content,
+    isActive: true
+  }));
+}
+
+function stripProjectLockMetadataFromBlock(block: PromptBlock): PromptBlock {
+  const nextBlock = cloneValue(block);
+  delete nextBlock.is_locked;
+  delete nextBlock.project_lock_id;
+  return nextBlock;
+}
+
+export function isProjectLockedBlock(block: PromptBlock): boolean {
+  return Boolean(block.is_locked && block.project_lock_id);
+}
+
+export function toggleProjectLock(block: PromptBlock): PromptBlock {
+  if (isProjectLockedBlock(block)) {
+    return stripProjectLockMetadataFromBlock(block);
+  }
+
+  return {
+    ...cloneValue(block),
+    is_locked: true,
+    project_lock_id: block.project_lock_id ?? makeId("project_lock")
+  };
+}
+
+export function stripProjectLockMetadata(payload: PromptPayload): PromptPayload {
+  return {
+    ...cloneValue(payload),
+    blocks: payload.blocks.map(stripProjectLockMetadataFromBlock)
+  };
+}
+
+function dedupeProjectLockedBlocks(blocks: PromptBlock[]): PromptBlock[] {
+  const byLockId = new Map<string, PromptBlock>();
+
+  blocks.forEach((block) => {
+    if (!isProjectLockedBlock(block)) {
+      return;
+    }
+
+    if (!byLockId.has(block.project_lock_id!)) {
+      byLockId.set(block.project_lock_id!, cloneValue(block));
+    }
+  });
+
+  return [...byLockId.values()];
+}
+
+export function extractProjectLockedBlocks(assets: PromptAsset[], folderId: string): PromptBlock[] {
+  return dedupeProjectLockedBlocks(
+    assets
+      .filter((asset) => asset.folder_id === folderId && !asset.deleted_at)
+      .flatMap((asset) => asset.payload.blocks)
+  );
+}
+
+export function applyProjectLockedBlocksToPayload(
+  payload: PromptPayload,
+  lockedBlocks: PromptBlock[]
+): PromptPayload {
+  const canonicalLockedBlocks = dedupeProjectLockedBlocks(lockedBlocks);
+  const existingLockedBlocks = new Map(
+    payload.blocks
+      .filter(isProjectLockedBlock)
+      .map((block) => [block.project_lock_id!, block] as const)
+  );
+
+  const nextLockedBlocks = canonicalLockedBlocks.map((block) => {
+    const existingBlock = existingLockedBlocks.get(block.project_lock_id!);
+    return {
+      ...cloneValue(block),
+      id: existingBlock?.id ?? makeId("block"),
+      is_locked: true,
+      project_lock_id: block.project_lock_id!
+    };
+  });
+
+  const unlockedBlocks = payload.blocks
+    .filter((block) => !block.project_lock_id && !block.is_locked)
+    .map(stripProjectLockMetadataFromBlock);
+
+  return {
+    ...cloneValue(payload),
+    blocks: [...nextLockedBlocks, ...unlockedBlocks]
+  };
+}
+
+export function syncProjectLockedBlocks(
+  projectAssets: PromptAsset[],
+  currentDraft: PromptAsset
+): PromptAsset[] {
+  const scopedAssets = projectAssets.filter(
+    (asset) => asset.folder_id === currentDraft.folder_id && !asset.deleted_at
+  );
+  const canonicalLockedBlocks = dedupeProjectLockedBlocks(currentDraft.payload.blocks);
+
+  return scopedAssets.map((asset) => {
+    const sourceAsset = asset.id === currentDraft.id ? currentDraft : asset;
+    return {
+      ...cloneValue(sourceAsset),
+      payload: applyProjectLockedBlocksToPayload(sourceAsset.payload, canonicalLockedBlocks)
+    };
+  });
+}
+
 export function createDefaultPayload(folderType: FolderType, shotNumber = 1): PromptPayload {
   return {
     blocks:
@@ -150,6 +278,18 @@ export function createDefaultPayload(folderType: FolderType, shotNumber = 1): Pr
       separator: "\n",
       include_labels: true
     }
+  };
+}
+
+export function createPayloadFromAssetTemplate(
+  template: AssetTemplate,
+  folderType: FolderType,
+  shotNumber = 1
+): PromptPayload {
+  const payload = createDefaultPayload(folderType, shotNumber);
+  return {
+    ...payload,
+    blocks: createBlocksFromAssetTemplate(template)
   };
 }
 
@@ -280,7 +420,7 @@ export function duplicatePayload(payload: PromptPayload): PromptPayload {
 
 export function duplicateBlock(block: PromptBlock): PromptBlock {
   return {
-    ...cloneValue(block),
+    ...stripProjectLockMetadataFromBlock(block),
     id: makeId("block"),
     label: block.label?.trim() ? `${block.label} 副本` : ""
   };

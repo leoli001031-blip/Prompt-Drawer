@@ -36,10 +36,16 @@ export function useWorkbench() {
 
   const folders = snapshot?.folders ?? [];
   const assets = useMemo(() => (snapshot ? mapPromptAssets(snapshot) : []), [snapshot]);
+  const activeAssets = useMemo(() => assets.filter((asset) => !asset.deleted_at), [assets]);
+  const trashedAssets = useMemo(() => assets.filter((asset) => Boolean(asset.deleted_at)), [assets]);
   const selectedFolder = folders.find((folder) => folder.id === selectedFolderId) ?? null;
   const folderAssets = useMemo(
-    () => assets.filter((asset) => asset.folder_id === selectedFolderId),
-    [assets, selectedFolderId]
+    () => activeAssets.filter((asset) => asset.folder_id === selectedFolderId),
+    [activeAssets, selectedFolderId]
+  );
+  const trashedFolderAssets = useMemo(
+    () => trashedAssets.filter((asset) => asset.folder_id === selectedFolderId),
+    [selectedFolderId, trashedAssets]
   );
   const visibleAssets = useMemo(() => {
     const filtered = folderAssets.filter(
@@ -48,6 +54,13 @@ export function useWorkbench() {
 
     return sortAssetsForDisplay(filtered, selectedFolder?.type ?? "library", sortMode);
   }, [favoritesOnly, folderAssets, searchQuery, selectedFolder?.type, sortMode]);
+  const visibleTrashedAssets = useMemo(() => {
+    const filtered = trashedFolderAssets.filter(
+      (asset) => (!favoritesOnly || asset.is_favorite) && matchesAssetQuery(asset, searchQuery)
+    );
+
+    return sortAssetsForDisplay(filtered, selectedFolder?.type ?? "library", sortMode);
+  }, [favoritesOnly, trashedFolderAssets, searchQuery, selectedFolder?.type, sortMode]);
   const favoriteCount = useMemo(
     () => folderAssets.filter((asset) => asset.is_favorite).length,
     [folderAssets]
@@ -95,9 +108,13 @@ export function useWorkbench() {
     setStatusMessage,
     folders,
     assets,
+    activeAssets,
+    trashedAssets,
     selectedFolder,
     folderAssets,
+    trashedFolderAssets,
     visibleAssets,
+    visibleTrashedAssets,
     favoriteCount,
     projectDuration,
     applySnapshot

@@ -13,8 +13,10 @@ export interface SidebarProps {
   statusMessage: string;
   searchQuery: string;
   favoritesOnly: boolean;
+  trashViewOpen: boolean;
   onCreateLibrary: () => void;
   onOpenAiSettings: () => void;
+  onToggleTrashView: () => void;
   onChangeSearchQuery: (value: string) => void;
   onChangeFavoritesOnly: (value: boolean) => void;
   onSelectFolder: (folderId: string) => void;
@@ -33,8 +35,10 @@ export function Sidebar({
   statusMessage,
   searchQuery,
   favoritesOnly,
+  trashViewOpen,
   onCreateLibrary,
   onOpenAiSettings,
+  onToggleTrashView,
   onChangeSearchQuery,
   onChangeFavoritesOnly,
   onSelectFolder,
@@ -48,7 +52,12 @@ export function Sidebar({
     <aside className="flex h-full w-52 shrink-0 flex-col border-r border-[#d8cfc5] bg-[#ebe4dc]/95 backdrop-blur-sm">
       <SidebarHeader />
 
-      <SidebarActions onCreateLibrary={onCreateLibrary} onOpenAiSettings={onOpenAiSettings} />
+      <SidebarActions
+        onCreateLibrary={onCreateLibrary}
+        onOpenAiSettings={onOpenAiSettings}
+        trashViewOpen={trashViewOpen}
+        onToggleTrashView={onToggleTrashView}
+      />
 
       <SearchPanel
         searchQuery={searchQuery}

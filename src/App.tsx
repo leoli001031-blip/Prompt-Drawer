@@ -1,21 +1,34 @@
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import {
   AiSettingsModal,
   AssetContextMenu,
   AssetEditorPane,
   AssetList,
+  CreateLibraryModal,
   CurrentFolderOverview,
   FolderContextMenu,
   ImportPanel,
   Sidebar
 } from "./components";
 import { loadAiSettings } from "./lib/ai";
-import { useAiAssistant, useAssetDraft, useWorkbench, useWorkbenchActions, useWorkbenchUiState } from "./hooks";
+import {
+  useAiAssistant,
+  useAssetDraft,
+  useWorkbench,
+  useWorkbenchActions,
+  useWorkbenchSettings,
+  useWorkbenchUiState
+} from "./hooks";
 import type { AiSettingsSnapshot } from "./types/ai";
 import type { FolderRecord, PromptAsset } from "./types/storage";
 
+function hasPrimaryModifier(event: KeyboardEvent): boolean {
+  return event.metaKey || event.ctrlKey;
+}
+
 export default function App() {
   const [aiSettings, setAiSettings] = useState<AiSettingsSnapshot>({ default_profile_id: null, profiles: [] });
+  const [selectedCreateAssetTemplateId, setSelectedCreateAssetTemplateId] = useState("");
   const {
     snapshot,
     storageDescriptor,
@@ -31,15 +44,43 @@ export default function App() {
     assets,
     selectedFolder,
     folderAssets,
+    trashedFolderAssets,
     visibleAssets,
+    visibleTrashedAssets,
     favoriteCount,
     projectDuration,
     applySnapshot
   } = useWorkbench();
   const {
+    workbenchSettings,
+    selectedTemplateId,
+    blockTemplateDraft,
+    setBlockTemplateDraft,
+    startNewBlockTemplate,
+    selectBlockTemplate,
+    saveCurrentBlockTemplate,
+    deleteCurrentBlockTemplate,
+    selectedAssetTemplateId,
+    assetTemplateDraft,
+    setAssetTemplateDraft,
+    startNewAssetTemplate,
+    selectAssetTemplate,
+    saveCurrentAssetTemplate,
+    deleteCurrentAssetTemplate,
+    resolveFolderTemplateId,
+    saveFolderDefaultTemplate
+  } = useWorkbenchSettings({
+    setStatusMessage
+  });
+  const {
     activeAssetId,
     setActiveAssetId,
     drawerOpen,
+    createLibraryModalOpen,
+    createLibraryName,
+    setCreateLibraryName,
+    createLibraryTemplateId,
+    setCreateLibraryTemplateId,
     importPanelOpen,
     importRaw,
     importTitle,
@@ -48,8 +89,12 @@ export default function App() {
     setEditingFolderName,
     folderContextMenu,
     assetContextMenu,
+    trashViewOpen,
     openAsset,
     closeDrawer,
+    openCreateLibraryModal,
+    closeCreateLibraryModal,
+    resetCreateLibraryDraft,
     openImportPanel,
     closeImportPanel,
     resetImportDraft,
@@ -62,14 +107,25 @@ export default function App() {
     closeFolderContextMenu,
     confirmFolderDelete,
     openAssetContextMenu,
-    closeAssetContextMenu
+    closeAssetContextMenu,
+    toggleTrashView,
+    closeTrashView
   } = useWorkbenchUiState();
+
+  const folderDefaultTemplateId = useMemo(
+    () => resolveFolderTemplateId(selectedFolderId),
+    [resolveFolderTemplateId, selectedFolderId]
+  );
 
   useEffect(() => {
     void loadAiSettings().then((nextAiSettings) => {
       setAiSettings(nextAiSettings);
     });
   }, []);
+
+  useEffect(() => {
+    setSelectedCreateAssetTemplateId(folderDefaultTemplateId);
+  }, [folderDefaultTemplateId]);
 
   const activeAsset = assets.find((asset) => asset.id === activeAssetId) ?? null;
   const {
@@ -79,7 +135,7 @@ export default function App() {
     saveStateLabel,
     copyFeedback,
     isManualSaving,
-    confirmAssetDelete,
+    confirmPermanentDelete,
     versionName,
     setVersionName,
     copyTargetFolderId,
@@ -88,27 +144,39 @@ export default function App() {
     setIsEditingAssetTitle,
     draggingBlockId,
     dragOverBlockId,
+    canUndo,
+    canRedo,
     resetDraftUiState,
     saveAsset,
-    deleteAsset,
+    moveAssetToTrash,
+    restoreAsset,
+    permanentlyDeleteAsset,
     copyExport,
     updateBlock,
     removeBlock,
     addBlock,
     duplicateBlock,
+    toggleBlockLock,
     beginBlockDrag,
     updateBlockDragTarget,
     clearBlockDragState,
     createVersion,
-    restoreVersion
+    restoreVersion,
+    undoDraft,
+    redoDraft
   } = useAssetDraft({
     activeAsset,
+    folderAssets,
     selectedFolderId,
     storageMode: storageDescriptor?.mode,
     applySnapshot,
     setSelectedFolderId,
     setStatusMessage,
     onDeleteAssetSuccess: () => {
+      closeDrawer();
+      setAiPanelOpen(false);
+    },
+    onRestoreAssetSuccess: () => {
       closeDrawer();
       setAiPanelOpen(false);
     }
@@ -154,10 +222,6 @@ export default function App() {
   });
 
   useEffect(() => {
-    if (!drawerOpen && !aiSettingsOpen) {
-      return;
-    }
-
     const handleEscape = (event: KeyboardEvent) => {
       if (event.key !== "Escape" || event.defaultPrevented) {
         return;
@@ -165,6 +229,12 @@ export default function App() {
 
       if (aiSettingsOpen) {
         setAiSettingsOpen(false);
+        return;
+      }
+
+      if (createLibraryModalOpen) {
+        closeCreateLibraryModal();
+        resetCreateLibraryDraft();
         return;
       }
 
@@ -193,12 +263,17 @@ export default function App() {
         return;
       }
 
+      if (trashViewOpen) {
+        closeTrashView();
+        return;
+      }
+
       closeEditor();
     };
 
     window.addEventListener("keydown", handleEscape);
     return () => window.removeEventListener("keydown", handleEscape);
-  }, [aiPanelOpen, aiSettingsOpen, assetContextMenu, drawerOpen, folderContextMenu, importPanelOpen, isEditingAssetTitle]);
+  }, [aiPanelOpen, aiSettingsOpen, assetContextMenu, closeCreateLibraryModal, createLibraryModalOpen, folderContextMenu, importPanelOpen, isEditingAssetTitle, resetCreateLibraryDraft, trashViewOpen]);
 
   function closeEditor(): void {
     closeDrawer();
@@ -209,6 +284,13 @@ export default function App() {
   function openAssetEditor(assetId: string): void {
     openAsset(assetId);
     setAiPanelOpen(false);
+  }
+
+  function toggleTrashMode(): void {
+    closeEditor();
+    closeFolderContextMenu();
+    closeAssetContextMenu();
+    toggleTrashView();
   }
 
   function startFolderRename(folder: FolderRecord): void {
@@ -233,6 +315,34 @@ export default function App() {
     stopFolderRename();
     openAssetContextMenu(event, asset);
   }
+
+  async function createLibrary(): Promise<void> {
+    const nextFolder = await createFolder("library", {
+      name: createLibraryName.trim() || "新提示词库"
+    });
+
+    if (nextFolder && createLibraryTemplateId) {
+      await saveFolderDefaultTemplate(nextFolder.id, createLibraryTemplateId);
+      setSelectedCreateAssetTemplateId(createLibraryTemplateId);
+    }
+
+    closeCreateLibraryModal();
+    resetCreateLibraryDraft();
+  }
+
+  async function removeFolderWithSettings(folder: FolderRecord): Promise<void> {
+    await removeFolder(folder);
+    await saveFolderDefaultTemplate(folder.id, null);
+  }
+
+  function changeSelectedCreateAssetTemplateId(value: string): void {
+    setSelectedCreateAssetTemplateId(value);
+
+    if (selectedFolder?.type === "library") {
+      void saveFolderDefaultTemplate(selectedFolder.id, value || null);
+    }
+  }
+
   const {
     renameFolder,
     createFolder,
@@ -246,7 +356,9 @@ export default function App() {
     duplicateCurrentAsset,
     toggleFavorite,
     copyProjectScript,
-    importAssets
+    importAssets,
+    restoreAsset: restoreAssetFromTrash,
+    permanentlyDeleteAsset: permanentlyDeleteAssetFromTrash
   } = useWorkbenchActions({
     snapshot,
     storageDescriptor,
@@ -260,6 +372,8 @@ export default function App() {
     editingFolderName,
     importRaw,
     importTitle,
+    assetTemplates: workbenchSettings.asset_templates,
+    selectedCreateAssetTemplateId,
     applySnapshot,
     setSelectedFolderId,
     setActiveAssetId,
@@ -274,6 +388,54 @@ export default function App() {
     onCompleteFolderRename: completeFolderRename
   });
 
+  useEffect(() => {
+    if (!drawerOpen || !assetDraft) {
+      return;
+    }
+
+    const handleEditorShortcuts = (event: KeyboardEvent) => {
+      if (!hasPrimaryModifier(event) || event.defaultPrevented || event.isComposing) {
+        return;
+      }
+
+      const key = event.key.toLowerCase();
+
+      if (key === "s") {
+        event.preventDefault();
+        void saveAsset();
+        return;
+      }
+
+      if (key === "d") {
+        event.preventDefault();
+        void duplicateCurrentAsset();
+        return;
+      }
+
+      if (key === "enter") {
+        if (!aiPanelOpen) {
+          return;
+        }
+
+        event.preventDefault();
+        void runAi();
+        return;
+      }
+
+      if (key === "z") {
+        event.preventDefault();
+        if (event.shiftKey) {
+          redoDraft();
+        } else {
+          undoDraft();
+        }
+      }
+    };
+
+    window.addEventListener("keydown", handleEditorShortcuts);
+    return () => window.removeEventListener("keydown", handleEditorShortcuts);
+  }, [aiPanelOpen, assetDraft, drawerOpen, duplicateCurrentAsset, redoDraft, runAi, saveAsset, undoDraft]);
+
   if (!snapshot) {
     return (
       <div className="grid h-screen place-items-center bg-[#f4efe7] text-sm text-[#8b8379]">
@@ -281,6 +443,12 @@ export default function App() {
       </div>
     );
   }
+
+  const displayedAssets = trashViewOpen ? visibleTrashedAssets : visibleAssets;
+  const displayedFolderAssets = trashViewOpen ? trashedFolderAssets : folderAssets;
+  const overviewCountMetric = trashViewOpen
+    ? displayedAssets.length
+    : favoriteCount;
 
   return (
     <div className="h-screen overflow-hidden bg-[#f4efe7] text-[#5f584f]">
@@ -293,14 +461,16 @@ export default function App() {
           statusMessage={statusMessage}
           searchQuery={searchQuery}
           favoritesOnly={favoritesOnly}
-          onCreateLibrary={() => void createFolder("library")}
+          trashViewOpen={trashViewOpen}
+          onCreateLibrary={openCreateLibraryModal}
           onOpenAiSettings={openAiSettings}
+          onToggleTrashView={toggleTrashMode}
           onChangeSearchQuery={setSearchQuery}
           onChangeFavoritesOnly={setFavoritesOnly}
           onSelectFolder={(folderId) => {
             setSelectedFolderId(folderId);
             setActiveAssetId(null);
-      closeEditor();
+            closeEditor();
             closeFolderContextMenu();
             closeAssetContextMenu();
           }}
@@ -316,7 +486,7 @@ export default function App() {
           onClose={closeFolderContextMenu}
           onBeginRename={startFolderRename}
           onToggleConfirmDelete={confirmFolderDelete}
-          onDelete={(folder) => void removeFolder(folder)}
+          onDelete={(folder) => void removeFolderWithSettings(folder)}
           onCopyStoragePath={() => {
             closeFolderContextMenu();
             void copyStoragePath();
@@ -333,9 +503,12 @@ export default function App() {
 
         <AssetContextMenu
           menu={assetContextMenu}
+          isTrashViewOpen={trashViewOpen}
           onClose={closeAssetContextMenu}
           onDuplicateAsset={(asset) => void duplicateAsset(asset)}
-          onDeleteAsset={(asset) => void removeAsset(asset)}
+          onMoveAssetToTrash={(asset) => void removeAsset(asset)}
+          onRestoreAsset={(asset) => void restoreAssetFromTrash(asset)}
+          onPermanentlyDeleteAsset={(asset) => void permanentlyDeleteAssetFromTrash(asset)}
         />
 
         <AiSettingsModal
@@ -351,6 +524,45 @@ export default function App() {
           onTest={() => void testAiProfile()}
           onSave={() => void saveAiProfile()}
           onDelete={() => void deleteAiProfile()}
+          workbenchSettings={workbenchSettings}
+          selectedTemplateId={selectedTemplateId}
+          blockTemplateDraft={blockTemplateDraft}
+          onBeginCreateBlockTemplate={startNewBlockTemplate}
+          onSelectBlockTemplate={selectBlockTemplate}
+          onChangeBlockTemplateDraft={(patch) =>
+            setBlockTemplateDraft((current) => ({
+              ...current,
+              ...patch
+            }))
+          }
+          onSaveBlockTemplate={() => void saveCurrentBlockTemplate()}
+          onDeleteBlockTemplate={() => void deleteCurrentBlockTemplate()}
+          selectedAssetTemplateId={selectedAssetTemplateId}
+          assetTemplateDraft={assetTemplateDraft}
+          onBeginCreateAssetTemplate={startNewAssetTemplate}
+          onSelectAssetTemplate={selectAssetTemplate}
+          onChangeAssetTemplateDraft={(patch) =>
+            setAssetTemplateDraft((current) => ({
+              ...current,
+              ...patch
+            }))
+          }
+          onSaveAssetTemplate={() => void saveCurrentAssetTemplate()}
+          onDeleteAssetTemplate={() => void deleteCurrentAssetTemplate()}
+        />
+
+        <CreateLibraryModal
+          open={createLibraryModalOpen}
+          libraryName={createLibraryName}
+          selectedTemplateId={createLibraryTemplateId}
+          assetTemplates={workbenchSettings.asset_templates}
+          onClose={() => {
+            closeCreateLibraryModal();
+            resetCreateLibraryDraft();
+          }}
+          onChangeLibraryName={setCreateLibraryName}
+          onChangeSelectedTemplateId={setCreateLibraryTemplateId}
+          onCreate={() => void createLibrary()}
         />
 
         <ImportPanel
@@ -369,13 +581,17 @@ export default function App() {
             {!drawerOpen ? (
               <CurrentFolderOverview
                 selectedFolder={selectedFolder}
-                visibleAssetCount={visibleAssets.length}
-                folderAssetCount={folderAssets.length}
-                favoriteCount={favoriteCount}
+                trashViewOpen={trashViewOpen}
+                visibleAssetCount={displayedAssets.length}
+                folderAssetCount={displayedFolderAssets.length}
+                favoriteCount={overviewCountMetric}
                 projectDuration={projectDuration}
                 searchQuery={searchQuery}
                 favoritesOnly={favoritesOnly}
                 storageDescriptor={storageDescriptor}
+                assetTemplates={workbenchSettings.asset_templates}
+                selectedAssetTemplateId={selectedCreateAssetTemplateId}
+                onChangeSelectedAssetTemplateId={changeSelectedCreateAssetTemplateId}
                 onRenameFolder={() => selectedFolder && startFolderRename(selectedFolder)}
                 onCopyProjectScript={() => void copyProjectScript()}
                 onOpenImport={openImportPanel}
@@ -395,16 +611,19 @@ export default function App() {
                   onBack={closeEditor}
                   draggingBlockId={draggingBlockId}
                   dragOverBlockId={dragOverBlockId}
+                  blockTemplates={workbenchSettings.block_templates}
                   onAddBlock={addBlock}
                   onBlockPointerDown={beginBlockDrag}
                   onBlockPointerEnter={updateBlockDragTarget}
                   onUpdateBlock={updateBlock}
+                  onToggleBlockLock={toggleBlockLock}
                   onDuplicateBlock={duplicateBlock}
                   onRemoveBlock={removeBlock}
                   onClearDragState={clearBlockDragState}
                   exportPreview={exportPreview}
                   copyFeedback={copyFeedback}
                   onCopyExport={() => void copyExport()}
+                  isTrashViewOpen={trashViewOpen}
                   aiPanelOpen={aiPanelOpen}
                   onToggleAiPanel={() => setAiPanelOpen((current) => !current)}
                   onOpenAiSettings={openAiSettings}
@@ -424,15 +643,21 @@ export default function App() {
                   aiResult={aiResult}
                   onApplyAiToTargetBlock={applyAiToTargetBlock}
                   onAppendAiAsBlock={appendAiAsBlock}
-                        onCopyAiResult={() => void copyAiResult()}
-                        isManualSaving={isManualSaving}
-                        onSaveAsset={() => void saveAsset()}
-                        onDuplicateCurrentAsset={() => void duplicateCurrentAsset()}
+                  onCopyAiResult={() => void copyAiResult()}
+                  isManualSaving={isManualSaving}
+                  canUndo={canUndo}
+                  canRedo={canRedo}
+                  onUndoDraft={undoDraft}
+                  onRedoDraft={redoDraft}
+                  onSaveAsset={() => void saveAsset()}
+                  onDuplicateCurrentAsset={() => void duplicateCurrentAsset()}
                   copyTargetFolderId={copyTargetFolderId}
                   onChangeCopyTargetFolderId={setCopyTargetFolderId}
                   folders={folders}
-                  confirmAssetDelete={confirmAssetDelete}
-                  onDeleteAsset={() => void deleteAsset()}
+                  confirmPermanentDelete={confirmPermanentDelete}
+                  onMoveAssetToTrash={() => void moveAssetToTrash()}
+                  onRestoreAsset={() => void restoreAsset()}
+                  onPermanentlyDeleteAsset={() => void permanentlyDeleteAsset()}
                   versionName={versionName}
                   onChangeVersionName={setVersionName}
                   onCreateVersion={() => void createVersion()}
@@ -441,9 +666,10 @@ export default function App() {
                 />
               ) : (
                 <AssetList
-                  visibleAssets={visibleAssets}
-                  folderAssets={folderAssets}
+                  visibleAssets={displayedAssets}
+                  folderAssets={displayedFolderAssets}
                   selectedFolderType={selectedFolder?.type}
+                  isTrashViewOpen={trashViewOpen}
                   onOpenAsset={openAssetEditor}
                   onOpenAssetContextMenu={openAssetMenu}
                   onToggleFavorite={(asset) => void toggleFavorite(asset)}

@@ -63,7 +63,8 @@ function buildPromptAssetRow(input: CreatePromptAssetInput): PromptAssetRow {
     title: input.title,
     payload: serializePromptPayload(input.payload),
     is_favorite: input.is_favorite ? 1 : 0,
-    updated_at: Date.now()
+    updated_at: Date.now(),
+    deleted_at: null
   };
 }
 
@@ -159,12 +160,38 @@ export async function updatePromptAsset(input: UpdatePromptAssetInput): Promise<
 
 export async function deletePromptAsset(assetId: string): Promise<WorkbenchSnapshot> {
   if (isTauriAvailable()) {
-    return invoke<WorkbenchSnapshot>("workbench_delete_prompt_asset", { assetId });
+    return invoke<WorkbenchSnapshot>("workbench_hard_delete_prompt_asset", { assetId });
   }
 
   return mutateLocalSnapshot((snapshot) => ({
     ...snapshot,
     prompt_assets: snapshot.prompt_assets.filter((asset) => asset.id !== assetId)
+  }));
+}
+
+export async function trashPromptAsset(assetId: string): Promise<WorkbenchSnapshot> {
+  if (isTauriAvailable()) {
+    return invoke<WorkbenchSnapshot>("workbench_soft_delete_prompt_asset", { assetId });
+  }
+
+  return mutateLocalSnapshot((snapshot) => ({
+    ...snapshot,
+    prompt_assets: snapshot.prompt_assets.map((asset) =>
+      asset.id === assetId ? { ...asset, deleted_at: Date.now(), updated_at: Date.now() } : asset
+    )
+  }));
+}
+
+export async function restorePromptAsset(assetId: string): Promise<WorkbenchSnapshot> {
+  if (isTauriAvailable()) {
+    return invoke<WorkbenchSnapshot>("workbench_restore_prompt_asset", { assetId });
+  }
+
+  return mutateLocalSnapshot((snapshot) => ({
+    ...snapshot,
+    prompt_assets: snapshot.prompt_assets.map((asset) =>
+      asset.id === assetId ? { ...asset, deleted_at: null, updated_at: Date.now() } : asset
+    )
   }));
 }
 

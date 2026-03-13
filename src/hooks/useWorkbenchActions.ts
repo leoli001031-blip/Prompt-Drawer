@@ -1,10 +1,14 @@
 import type { Dispatch, SetStateAction } from "react";
 import {
+  applyProjectLockedBlocksToPayload,
   buildProjectScript,
   createDefaultPayload,
+  createPayloadFromAssetTemplate,
   duplicatePayload,
+  extractProjectLockedBlocks,
   getNextShotNumber,
-  parseImportedAssets
+  parseImportedAssets,
+  stripProjectLockMetadata
 } from "../lib/payload";
 import {
   createFolder as createFolderRecord,
@@ -13,6 +17,8 @@ import {
   deletePromptAsset,
   exportWorkbenchJson as exportWorkbenchSnapshotJson,
   mapPromptAssets,
+  restorePromptAsset,
+  trashPromptAsset,
   updateFolder as updateFolderRecord,
   updatePromptAsset
 } from "../lib/workbench";
@@ -24,6 +30,7 @@ import type {
   StorageDescriptor,
   WorkbenchSnapshot
 } from "../types/storage";
+import type { AssetTemplate } from "../types/settings";
 
 export interface UseWorkbenchActionsArgs {
   snapshot: WorkbenchSnapshot | null;
@@ -38,6 +45,8 @@ export interface UseWorkbenchActionsArgs {
   editingFolderName: string;
   importRaw: string;
   importTitle: string;
+  assetTemplates: AssetTemplate[];
+  selectedCreateAssetTemplateId: string;
   applySnapshot: (nextSnapshot: WorkbenchSnapshot, message: string) => WorkbenchSnapshot;
   setSelectedFolderId: Dispatch<SetStateAction<string | null>>;
   setActiveAssetId: Dispatch<SetStateAction<string | null>>;
@@ -65,6 +74,8 @@ export function useWorkbenchActions({
   editingFolderName,
   importRaw,
   importTitle,
+  assetTemplates,
+  selectedCreateAssetTemplateId,
   applySnapshot,
   setSelectedFolderId,
   setActiveAssetId,
@@ -78,6 +89,20 @@ export function useWorkbenchActions({
   onCancelFolderRename,
   onCompleteFolderRename
 }: UseWorkbenchActionsArgs) {
+  function applyProjectLocksForTarget(
+    payload: PromptAsset["payload"],
+    targetFolderId: string,
+    _targetFolderType: FolderType
+  ): PromptAsset["payload"] {
+    const projectLockedBlocks = extractProjectLockedBlocks(assets, targetFolderId);
+
+    if (projectLockedBlocks.length === 0) {
+      return stripProjectLockMetadata(payload);
+    }
+
+    return applyProjectLockedBlocksToPayload(payload, projectLockedBlocks);
+  }
+
   async function renameFolder(folder: FolderRecord): Promise<void> {
     const nextName = editingFolderName.trim() || folder.name;
     if (nextName === folder.name) {
@@ -96,16 +121,22 @@ export function useWorkbenchActions({
     onCompleteFolderRename();
   }
 
-  async function createFolder(type: FolderType): Promise<void> {
+  async function createFolder(
+    type: FolderType,
+    options?: {
+      name?: string;
+    }
+  ): Promise<FolderRecord | null> {
     const nextSnapshot = applySnapshot(
       await createFolderRecord({
-        name: type === "library" ? "新提示词库" : "新项目",
+        name: options?.name?.trim() || (type === "library" ? "新提示词库" : "新项目"),
         type
       }),
       "已创建目录。"
     );
     const nextFolder = [...nextSnapshot.folders].sort((left, right) => right.created_at - left.created_at)[0];
     setSelectedFolderId(nextFolder?.id ?? null);
+    return nextFolder ?? null;
   }
 
   async function removeFolder(folder: FolderRecord): Promise<void> {
@@ -119,7 +150,25 @@ export function useWorkbenchActions({
   }
 
   async function removeAsset(asset: PromptAsset): Promise<void> {
-    applySnapshot(await deletePromptAsset(asset.id), "资产已删除。");
+    applySnapshot(await trashPromptAsset(asset.id), "资产已移入垃圾桶。");
+    onCloseAssetContextMenu();
+
+    if (activeAssetId === asset.id) {
+      onCloseDrawer();
+    }
+  }
+
+  async function restoreAsset(asset: PromptAsset): Promise<void> {
+    applySnapshot(await restorePromptAsset(asset.id), "资产已从垃圾桶恢复。");
+    onCloseAssetContextMenu();
+
+    if (activeAssetId === asset.id) {
+      onCloseDrawer();
+    }
+  }
+
+  async function permanentlyDeleteAsset(asset: PromptAsset): Promise<void> {
+    applySnapshot(await deletePromptAsset(asset.id), "资产已永久删除。");
     onCloseAssetContextMenu();
 
     if (activeAssetId === asset.id) {
@@ -134,6 +183,11 @@ export function useWorkbenchActions({
 
     const nextShotNumber =
       selectedFolder.type === "project" ? getNextShotNumber(assets, selectedFolder.id) : 1;
+    const selectedAssetTemplate =
+      assetTemplates.find((template) => template.id === selectedCreateAssetTemplateId) ?? null;
+    const basePayload = selectedAssetTemplate
+      ? createPayloadFromAssetTemplate(selectedAssetTemplate, selectedFolder.type, nextShotNumber)
+      : createDefaultPayload(selectedFolder.type, nextShotNumber);
 
     const nextSnapshot = applySnapshot(
       await createPromptAsset({
@@ -142,7 +196,11 @@ export function useWorkbenchActions({
           selectedFolder.type === "project"
             ? `镜头 ${String(nextShotNumber).padStart(2, "0")} / 新分镜卡片`
             : "新提示词资产",
-        payload: createDefaultPayload(selectedFolder.type, nextShotNumber),
+        payload: applyProjectLocksForTarget(
+          basePayload,
+          selectedFolder.id,
+          selectedFolder.type
+        ),
         is_favorite: false
       }),
       "已创建资产。"
@@ -189,11 +247,17 @@ export function useWorkbenchActions({
       duplicatedPayload.storyboard = undefined;
     }
 
+    const nextPayload = applyProjectLocksForTarget(
+      duplicatedPayload,
+      targetFolderId,
+      targetFolder?.type ?? "library"
+    );
+
     const nextSnapshot = applySnapshot(
       await createPromptAsset({
         folder_id: targetFolderId,
         title: `${asset.title} 副本`,
-        payload: duplicatedPayload,
+        payload: nextPayload,
         is_favorite: false
       }),
       targetFolderId === asset.folder_id ? "已复制资产。" : "已复制到目标目录。"
@@ -264,16 +328,20 @@ export function useWorkbenchActions({
       const title = importedAssets.length === 1 && importTitle.trim() ? importTitle.trim() : item.title;
       const payload =
         selectedFolder.type === "project"
-          ? {
-              ...item.payload,
-              storyboard: {
-                ...(item.payload.storyboard ?? {}),
-                shot_number:
-                  item.payload.storyboard?.shot_number ??
-                  getNextShotNumber(mapPromptAssets(nextSnapshot ?? snapshot), selectedFolder.id)
-              }
-            }
-          : item.payload;
+          ? applyProjectLocksForTarget(
+              {
+                ...item.payload,
+                storyboard: {
+                  ...(item.payload.storyboard ?? {}),
+                  shot_number:
+                    item.payload.storyboard?.shot_number ??
+                    getNextShotNumber(mapPromptAssets(nextSnapshot ?? snapshot), selectedFolder.id)
+                }
+              },
+              selectedFolder.id,
+              selectedFolder.type
+            )
+          : stripProjectLockMetadata(item.payload);
 
       nextSnapshot = await createPromptAsset({
         folder_id: selectedFolder.id,
@@ -295,6 +363,8 @@ export function useWorkbenchActions({
     createFolder,
     removeFolder,
     removeAsset,
+    restoreAsset,
+    permanentlyDeleteAsset,
     createAsset,
     copyStoragePath,
     copyWorkbenchJson,

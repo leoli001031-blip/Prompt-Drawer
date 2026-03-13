@@ -1,6 +1,16 @@
 import { useEffect, useMemo, useState, type Dispatch, type SetStateAction } from "react";
-import { buildExportPreview } from "../lib/payload";
-import { deletePromptAsset, mapPromptAssets, updatePromptAsset } from "../lib/workbench";
+import {
+  buildExportPreview,
+  isProjectLockedBlock,
+  syncProjectLockedBlocks
+} from "../lib/payload";
+import {
+  deletePromptAsset,
+  mapPromptAssets,
+  restorePromptAsset,
+  trashPromptAsset,
+  updatePromptAsset
+} from "../lib/workbench";
 import { assetFingerprint, cloneAsset } from "../utils/asset";
 import { copyText } from "../utils/browser";
 import type { PromptAsset, StorageDescriptor, WorkbenchSnapshot } from "../types/storage";
@@ -10,11 +20,13 @@ export interface UseAssetPersistenceArgs {
   selectedFolderId: string | null;
   storageMode: StorageDescriptor["mode"] | null | undefined;
   assetDraft: PromptAsset | null;
-  setAssetDraft: Dispatch<SetStateAction<PromptAsset | null>>;
+  folderAssets: PromptAsset[];
+  replaceAssetDraft: (nextAsset: PromptAsset | null, options?: { resetHistory?: boolean }) => void;
   applySnapshot: (nextSnapshot: WorkbenchSnapshot, message: string) => WorkbenchSnapshot;
   setSelectedFolderId: Dispatch<SetStateAction<string | null>>;
   setStatusMessage: Dispatch<SetStateAction<string>>;
   onDeleteAssetSuccess: () => void;
+  onRestoreAssetSuccess: () => void;
   onResetInteractionState: () => void;
 }
 
@@ -23,17 +35,19 @@ export function useAssetPersistence({
   selectedFolderId,
   storageMode,
   assetDraft,
-  setAssetDraft,
+  folderAssets,
+  replaceAssetDraft,
   applySnapshot,
   setSelectedFolderId,
   setStatusMessage,
   onDeleteAssetSuccess,
+  onRestoreAssetSuccess,
   onResetInteractionState
 }: UseAssetPersistenceArgs) {
   const [copyFeedback, setCopyFeedback] = useState("");
   const [isAutoSaving, setIsAutoSaving] = useState(false);
   const [isManualSaving, setIsManualSaving] = useState(false);
-  const [confirmAssetDelete, setConfirmAssetDelete] = useState(false);
+  const [confirmPermanentDelete, setConfirmPermanentDelete] = useState(false);
   const [copyTargetFolderId, setCopyTargetFolderId] = useState<string | null>(null);
   const [isEditingAssetTitle, setIsEditingAssetTitle] = useState(false);
 
@@ -44,19 +58,65 @@ export function useAssetPersistence({
   );
   const saveStateLabel = isManualSaving || isAutoSaving ? "保存中" : draftIsDirty ? "待保存" : "已保存";
 
+  async function saveProjectLockedAssets(draftToSave: PromptAsset): Promise<WorkbenchSnapshot> {
+    const synchronizedAssets = syncProjectLockedBlocks(folderAssets, draftToSave);
+
+    if (synchronizedAssets.length === 0) {
+      return updatePromptAsset({
+        id: draftToSave.id,
+        folder_id: draftToSave.folder_id,
+        title: draftToSave.title.trim() || "未命名资产",
+        payload: draftToSave.payload,
+        is_favorite: draftToSave.is_favorite
+      });
+    }
+
+    let nextSnapshot: WorkbenchSnapshot | null = null;
+
+    for (const asset of synchronizedAssets) {
+      nextSnapshot = await updatePromptAsset({
+        id: asset.id,
+        folder_id: asset.folder_id,
+        title: asset.title.trim() || "未命名资产",
+        payload: asset.payload,
+        is_favorite: asset.is_favorite
+      });
+    }
+
+    return nextSnapshot!;
+  }
+
+  async function saveDraftSnapshot(draftToSave: PromptAsset): Promise<WorkbenchSnapshot> {
+    const shouldSyncLockedBlocks =
+      draftToSave.payload.blocks.some(isProjectLockedBlock) ||
+      folderAssets.some((asset) => asset.payload.blocks.some(isProjectLockedBlock));
+
+    if (shouldSyncLockedBlocks && draftToSave.folder_id) {
+      return saveProjectLockedAssets(draftToSave);
+    }
+
+    return updatePromptAsset({
+      id: draftToSave.id,
+      folder_id: draftToSave.folder_id,
+      title: draftToSave.title.trim() || "未命名资产",
+      payload: draftToSave.payload,
+      is_favorite: draftToSave.is_favorite
+    });
+  }
+
   useEffect(() => {
     if (activeAsset) {
-      setAssetDraft(cloneAsset(activeAsset));
+      replaceAssetDraft(cloneAsset(activeAsset), { resetHistory: true });
       setIsEditingAssetTitle(false);
-      setConfirmAssetDelete(false);
+      setConfirmPermanentDelete(false);
       onResetInteractionState();
     } else {
-      setAssetDraft(null);
+      replaceAssetDraft(null, { resetHistory: true });
       setIsEditingAssetTitle(false);
-      setConfirmAssetDelete(false);
+      setConfirmPermanentDelete(false);
       onResetInteractionState();
     }
-  }, [activeAsset, onResetInteractionState, setAssetDraft]);
+  }, [activeAsset, onResetInteractionState, replaceAssetDraft]);
 
   useEffect(() => {
     setCopyTargetFolderId(selectedFolderId);
@@ -70,13 +130,7 @@ export function useAssetPersistence({
     const timer = window.setTimeout(() => {
       const draftToSave = cloneAsset(assetDraft);
       setIsAutoSaving(true);
-      void updatePromptAsset({
-        id: draftToSave.id,
-        folder_id: draftToSave.folder_id,
-        title: draftToSave.title.trim() || "未命名资产",
-        payload: draftToSave.payload,
-        is_favorite: draftToSave.is_favorite
-      })
+      void saveDraftSnapshot(draftToSave)
         .then((nextSnapshot) => {
           applySnapshot(nextSnapshot, storageMode === "sqlite" ? "已自动保存到 SQLite。" : "已自动保存。");
           setSelectedFolderId(draftToSave.folder_id);
@@ -90,7 +144,7 @@ export function useAssetPersistence({
     }, 900);
 
     return () => window.clearTimeout(timer);
-  }, [activeAsset, applySnapshot, assetDraft, draftIsDirty, setSelectedFolderId, setStatusMessage, storageMode]);
+  }, [activeAsset, applySnapshot, assetDraft, draftIsDirty, folderAssets, setSelectedFolderId, setStatusMessage, storageMode]);
 
   useEffect(() => {
     if (!draftIsDirty) {
@@ -118,13 +172,7 @@ export function useAssetPersistence({
 
     try {
       const nextSnapshot = applySnapshot(
-        await updatePromptAsset({
-          id: draftToSave.id,
-          folder_id: draftToSave.folder_id,
-          title: draftToSave.title.trim() || "未命名资产",
-          payload: draftToSave.payload,
-          is_favorite: draftToSave.is_favorite
-        }),
+        await saveDraftSnapshot(draftToSave),
         mode === "manual"
           ? storageMode === "sqlite"
             ? "资产已保存到 SQLite。"
@@ -135,7 +183,7 @@ export function useAssetPersistence({
       );
       setSelectedFolderId(draftToSave.folder_id);
       const refreshed = mapPromptAssets(nextSnapshot).find((asset) => asset.id === draftToSave.id) ?? null;
-      setAssetDraft(refreshed ? cloneAsset(refreshed) : null);
+      replaceAssetDraft(refreshed ? cloneAsset(refreshed) : null);
     } finally {
       if (mode === "manual") {
         setIsManualSaving(false);
@@ -147,20 +195,38 @@ export function useAssetPersistence({
     await persistAssetDraft("manual");
   }
 
-  async function deleteAsset(): Promise<void> {
+  async function moveAssetToTrash(): Promise<void> {
     if (!assetDraft) {
       return;
     }
 
-    if (!confirmAssetDelete) {
-      setConfirmAssetDelete(true);
-      setStatusMessage("再次点击“确认删除”以删除当前资产。");
+    applySnapshot(await trashPromptAsset(assetDraft.id), "资产已移入垃圾桶。");
+    onDeleteAssetSuccess();
+  }
+
+  async function restoreAsset(): Promise<void> {
+    if (!assetDraft) {
       return;
     }
 
-    const deletedAssetId = assetDraft.id;
-    applySnapshot(await deletePromptAsset(deletedAssetId), "资产已删除。");
-    setConfirmAssetDelete(false);
+    applySnapshot(await restorePromptAsset(assetDraft.id), "资产已从垃圾桶恢复。");
+    setConfirmPermanentDelete(false);
+    onRestoreAssetSuccess();
+  }
+
+  async function permanentlyDeleteAsset(): Promise<void> {
+    if (!assetDraft) {
+      return;
+    }
+
+    if (!confirmPermanentDelete) {
+      setConfirmPermanentDelete(true);
+      setStatusMessage("再次点击“确认永久删除”以彻底移除当前资产。");
+      return;
+    }
+
+    applySnapshot(await deletePromptAsset(assetDraft.id), "资产已永久删除。");
+    setConfirmPermanentDelete(false);
     onDeleteAssetSuccess();
   }
 
@@ -177,7 +243,7 @@ export function useAssetPersistence({
 
   function resetPersistenceState(): void {
     setIsEditingAssetTitle(false);
-    setConfirmAssetDelete(false);
+    setConfirmPermanentDelete(false);
   }
 
   return {
@@ -186,13 +252,15 @@ export function useAssetPersistence({
     saveStateLabel,
     copyFeedback,
     isManualSaving,
-    confirmAssetDelete,
+    confirmPermanentDelete,
     copyTargetFolderId,
     setCopyTargetFolderId,
     isEditingAssetTitle,
     setIsEditingAssetTitle,
     saveAsset,
-    deleteAsset,
+    moveAssetToTrash,
+    restoreAsset,
+    permanentlyDeleteAsset,
     copyExport,
     resetPersistenceState
   };

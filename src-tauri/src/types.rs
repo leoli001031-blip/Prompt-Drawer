@@ -18,6 +18,7 @@ pub struct PromptAssetRow {
     pub payload: String,
     pub is_favorite: i64,
     pub updated_at: i64,
+    pub deleted_at: Option<i64>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -30,6 +31,52 @@ pub struct WorkbenchSnapshot {
 pub struct StorageDescriptor {
     pub mode: String,
     pub path: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct BlockTemplate {
+    pub id: String,
+    pub name: String,
+    #[serde(rename = "type")]
+    pub block_type: String,
+    pub label: String,
+    pub content: String,
+    pub created_at: i64,
+    pub updated_at: i64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AssetTemplateBlock {
+    #[serde(rename = "type")]
+    pub block_type: String,
+    pub label: String,
+    pub content: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AssetTemplate {
+    pub id: String,
+    pub name: String,
+    pub blocks: Vec<AssetTemplateBlock>,
+    pub structure: String,
+    pub created_at: i64,
+    pub updated_at: i64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct FolderTemplateBinding {
+    pub folder_id: String,
+    pub asset_template_id: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct WorkbenchSettingsSnapshot {
+    #[serde(default)]
+    pub block_templates: Vec<BlockTemplate>,
+    #[serde(default)]
+    pub asset_templates: Vec<AssetTemplate>,
+    #[serde(default)]
+    pub folder_template_bindings: Vec<FolderTemplateBinding>,
 }
 
 #[derive(Debug, Clone, Deserialize)]

@@ -7,4 +7,5 @@ export * from "./useBlockEditor";
 export * from "./useVersionHistory";
 export * from "./useWorkbench";
 export * from "./useWorkbenchActions";
+export * from "./useWorkbenchSettings";
 export * from "./useWorkbenchUiState";
